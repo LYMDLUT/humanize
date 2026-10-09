@@ -753,6 +753,9 @@ machine, humanize books a meeting:
   `this rendezvous is already holding 65536 meetings`.
 - Addresses are IPv4 only; a machine reachable only over IPv6 is relayed.
 - Neither half is told whether it was relayed.
+- A ticket may be met at again: a meeting takes no more halves once it has both, and a half
+  arriving where one of its own role is already waiting under the ticket waits behind it,
+  first come first met. This is what lets one serving half left standing serve every session.
 - `hmz internal anchor rendezvous [--listen [HOST:]PORT] [--punching SECONDS]` runs a broker on
   its own (default `0.0.0.0:0`) and prints `hmz internal anchor rendezvous listening HOST PORT`
   on stderr.
@@ -807,7 +810,8 @@ that allows them, or `--security-opt seccomp=unconfined`.
 
 ```text
 hmz internal anchor serve --export VIRTUAL[:REAL] [--export ...]
-                          (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT)
+                          (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT |
+                           --peer-file FILE)
                           [--token TOKEN] [--log-level LEVEL]
 ```
 
@@ -816,6 +820,7 @@ hmz internal anchor serve --export VIRTUAL[:REAL] [--export ...]
 | `--stdio` | one session on stdin/stdout; fds 0 and 1 are pointed at `/dev/null` for the rest of the process | humanize, for `local`, `ssh://`, `docker://`, `apple-container://` and `slurm://` targets |
 | `--listen [HOST:]PORT` | every TCP connection, one thread each, until interrupted; prints `hmz internal anchor serve listening HOST PORT` on stderr | a person, for `tcp://` targets; or the batch step of a Slurm job whose runtime says `via: tcp`, on `0.0.0.0:0` with a random secret set in its script |
 | `--peer TICKET@HOST:PORT` | one session met at a broker | humanize, for a harness on a third machine |
+| `--peer-file FILE` | one session after another met at a broker, each in a thread of its own, with the meeting in `FILE`; a meeting it could not have is gone back to after 1 s | a swarm task [dialling back](/reference/machines#swarm-environments), as its own command |
 
 - `--export VIRTUAL[:REAL]` is required and repeatable. `VIRTUAL` must be absolute; `REAL`
   defaults to `VIRTUAL`, with `~` expanded. A path outside every export is refused with

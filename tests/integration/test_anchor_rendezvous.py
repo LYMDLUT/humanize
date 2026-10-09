@@ -110,6 +110,41 @@ def test_two_meetings_at_one_broker_stay_two_sessions(broker: Broker) -> None:
         _closed(other)
 
 
+def test_one_ticket_is_met_at_again_and_its_halves_each_in_turn(
+    broker: Broker,
+) -> None:
+    meeting = Meeting(ticket(), *broker.address)
+    held: dict[str, list[socket.socket]] = {ANCHOR: [], SERVE: []}
+    lock = threading.Lock()
+
+    def half(role: str) -> None:
+        met = dial(meeting, role, timeout=PATIENCE)
+        met.settimeout(PATIENCE)
+        with lock:
+            held[role].append(met)
+
+    halves = [
+        threading.Thread(target=half, args=(role,))
+        for _ in range(3)
+        for role in (ANCHOR, SERVE)
+    ]
+    for one in halves:
+        one.start()
+    for one in halves:
+        one.join(3 * PATIENCE)
+    try:
+        assert [len(held[ANCHOR]), len(held[SERVE])] == [3, 3]
+        for at, one in enumerate(held[ANCHOR]):
+            one.sendall(bytes([at]))
+        for one in held[SERVE]:
+            one.sendall(one.recv(1))
+        # Each anchoring half hears back its own word, so each was joined to one other.
+        assert [one.recv(1) for one in held[ANCHOR]] == [b"\x00", b"\x01", b"\x02"]
+    finally:
+        for one in held[ANCHOR] + held[SERVE]:
+            one.close()
+
+
 def test_a_half_whose_other_half_never_comes_is_told_so() -> None:
     for broker in _broker(patience=0.3):
         with pytest.raises(OSError, match="never arrived"):

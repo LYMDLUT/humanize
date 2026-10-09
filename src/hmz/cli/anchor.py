@@ -13,6 +13,10 @@ a dictionary, and a machine that could host one may be none of the things a supe
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hmz.coganchor.serve.exports import ExportTable
 
 __all__ = ["anchor"]
 
@@ -25,6 +29,9 @@ _MAX_PORT = 65535
 
 #: What `--log-level` takes, and `HUMANIZE_LOG` may say, on each of the three lines that log.
 _LEVELS = ("debug", "info", "warning", "error")
+
+#: How long a standing serving half waits before going back to a meeting it could not have.
+_AGAIN = 1.0
 
 
 def _listen_on(spec: str, default: str) -> tuple[str, int] | None:
@@ -184,6 +191,12 @@ def _serve(argv: list[str]) -> int:
         help="serve one session through the rendezvous server using this ticket "
         "when this machine cannot be reached directly",
     )
+    where.add_argument(
+        "--peer-file",
+        metavar="FILE",
+        help="serve one session after another through the rendezvous server, each met "
+        "with the TICKET@HOST:PORT this file holds, such as a docker secret, until stopped",
+    )
     parser.add_argument(
         "--token",
         default=os.environ.get("HUMANIZE_TOKEN"),
@@ -207,6 +220,9 @@ def _serve(argv: list[str]) -> int:
     except ValueError as exc:
         print(f"hmz: {exc}", file=sys.stderr)
         return 2
+
+    if args.peer_file:
+        return _standing(args.peer_file, table, args.token)
 
     if args.peer:
         # Imported here: a half met through a broker is the one arrangement that needs the
@@ -260,6 +276,51 @@ def _serve(argv: list[str]) -> int:
     except OSError as exc:
         print(f"hmz: cannot listen on {host}:{port}: {exc.strerror}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _standing(path: str, table: ExportTable, token: str | None) -> int:
+    """Goes back to a meeting each time it is met, serving every session met there.
+
+    What a machine nothing can start a serving half on runs instead, as the command it was
+    started with -- a task of a docker swarm reached by no `docker exec`. The meeting is read
+    off a file, a secret, so that its ticket is in no command line; each session is served in
+    a thread of its own while the next one is waited for; and a meeting that could not be had
+    -- nobody came, or the broker is not there yet -- is simply gone back to.
+
+    Args:
+      path: The file holding the meeting, as `TICKET@HOST:PORT`.
+      table: The directories a session may name.
+      token: The shared secret a session must present, or None for none.
+
+    Returns:
+      Zero once it is interrupted, or one if the file holds no meeting.
+    """
+    import contextlib
+    import logging
+    import threading
+    import time
+    from pathlib import Path
+
+    from hmz.coganchor.proto import Channel
+    from hmz.coganchor.rendezvous import SERVE, Meeting, dial
+    from hmz.coganchor.serve.server import Server
+
+    try:
+        meeting = Meeting.parse(Path(path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError) as exc:
+        print(f"hmz: {exc}", file=sys.stderr)
+        return 1
+    with contextlib.suppress(KeyboardInterrupt):
+        while True:
+            try:
+                met = dial(meeting, SERVE)
+            except OSError as exc:
+                logging.getLogger(__name__).debug("no session met: %s", exc)
+                time.sleep(_AGAIN)
+                continue
+            served = Server(Channel.from_socket(met), table, token)
+            threading.Thread(target=served.serve, daemon=True).start()
     return 0
 
 

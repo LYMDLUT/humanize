@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
+import time
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
@@ -21,6 +24,9 @@ import hmz.coganchor.serve.server
 from hmz.cli.anchor import anchor
 from hmz.coganchor.anchor import NotInstalled
 from hmz.coganchor.proto import ProtocolError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -293,6 +299,42 @@ def test_serve_through_a_rendezvous_that_cannot_be_dialled_says_so(
     assert anchor(["serve", "--export", "/w", "--peer", "t@h:1"]) == 1
     assert capsys.readouterr().err == f"hmz: {failure}\n"
     serving.Server.assert_not_called()
+
+
+def test_serve_standing_serves_each_session_it_is_met_for_until_stopped(
+    serving: mock.Mock, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    peer = tmp_path / "peer"
+    peer.write_text("t@h:1\n")
+    serving.dial.side_effect = [
+        mock.Mock(),
+        OSError("nobody came"),
+        mock.Mock(),
+        KeyboardInterrupt,
+    ]
+    monkeypatch.setattr(time, "sleep", serving.sleep)
+    monkeypatch.setattr(threading, "Thread", serving.Thread)
+
+    assert anchor(["serve", "--export", "/", "--peer-file", str(peer)]) == 0
+
+    serving.meeting.assert_called_once_with("t@h:1")
+    assert serving.dial.call_args_list == 4 * [
+        mock.call(serving.meeting.return_value, hmz.coganchor.rendezvous.SERVE)
+    ]
+    serving.sleep.assert_called_once()
+    assert serving.Server.call_count == 2
+    assert serving.Thread.call_args_list == 2 * [
+        mock.call(target=serving.Server.return_value.serve, daemon=True)
+    ]
+    assert serving.Thread.return_value.start.call_count == 2
+
+
+def test_serve_standing_with_no_meeting_to_read_says_so(
+    serving: mock.Mock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert anchor(["serve", "--export", "/", "--peer-file", str(tmp_path / "no")]) == 1
+    assert "No such file" in capsys.readouterr().err
+    serving.dial.assert_not_called()
 
 
 @pytest.fixture

@@ -30,6 +30,12 @@ closes, both halves say so, and the connections they are already holding *to thi
 spliced together. No second dial, no second port, no third machine -- the fallback costs one
 message, because the relay is the socket the introduction was made over.
 
+A ticket may be met at again, which is what a serving half nothing can start is for: one left
+standing goes back to the meeting each time it is met, and every session is a meeting of its
+own. A meeting stops taking halves once it has both, and a half arriving where one of its own
+kind is already waiting waits behind it -- so two halves met under a ticket are never joined
+by a third, and two arriving at once are each met in turn.
+
 Which of the three a session got is not a thing the session is told. The channel is a socket
 either way, the protocol above it is the same protocol, and a flow that would have to behave
 differently for a relayed session is a flow that would have to know something no end of a
@@ -319,7 +325,8 @@ class Broker:
         self._patience = patience
         self._punching = punching
         self._lock = threading.Lock()
-        self._meetings: dict[str, _Pair] = {}
+        #: The meetings still waiting for a half, by ticket, oldest first.
+        self._meetings: dict[str, list[_Pair]] = {}
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
@@ -436,6 +443,9 @@ class Broker:
                 )
                 return
             other = pair.await_other(role, self._patience)
+            if other is None and not self._withdrawn(pair):
+                # Met in the instant it gave up: whoever took it off the queue has arrived.
+                other = pair.await_other(role, 0.0)
             if other is None:
                 _say(half, {"go": "no", "why": "the other half never arrived"})
                 return
@@ -494,27 +504,49 @@ class Broker:
     def _join(
         self, name: str, role: str, half: socket.socket, mine: list[tuple[str, int]]
     ) -> _Pair | None:
-        """Puts one half into its meeting, making the meeting if it is the first there."""
+        """Puts one half into the oldest meeting waiting for it, else into one of its own.
+
+        A meeting given its second half is taken off the queue there and then, so the next
+        half under the ticket starts the next meeting; and both are under the lock, so a half
+        giving up can tell whether it was met as it did.
+        """
         with self._lock:
-            pair = self._meetings.get(name)
-            if pair is None:
-                if len(self._meetings) >= _TICKETS:
-                    return None
-                pair = self._meetings[name] = _Pair(name)
-        pair.arrive(role, half, mine)
+            waiting = self._meetings.get(name, [])
+            if waiting and role not in waiting[0].halves:
+                pair = waiting.pop(0)
+                if not waiting:
+                    del self._meetings[name]
+            elif not waiting and len(self._meetings) >= _TICKETS:
+                return None
+            else:
+                pair = _Pair(name)
+                self._meetings.setdefault(name, []).append(pair)
+            pair.arrive(role, half, mine)
         return pair
 
+    def _withdrawn(self, pair: _Pair) -> bool:
+        """Takes a meeting off the queue, and says whether it was still on it."""
+        with self._lock:
+            waiting = self._meetings.get(pair.name, [])
+            if pair not in waiting:
+                return False
+            waiting.remove(pair)
+            if not waiting:
+                del self._meetings[pair.name]
+            return True
+
     def _forget(self, pair: _Pair, role: str) -> None:
-        """Takes a meeting away once the last half of it has gone."""
-        if pair.leave(role):
-            with self._lock:
-                if self._meetings.get(pair.name) is pair:
-                    del self._meetings[pair.name]
+        """Lets one half go, off the queue first so that nothing finds it half gone."""
+        self._withdrawn(pair)
+        pair.leave(role)
 
 
-@dataclass
+@dataclass(eq=False)
 class _Pair:
-    """One meeting: the two halves of it, and everything either is waiting on the other for."""
+    """One meeting: the two halves of it, and everything either is waiting on the other for.
+
+    Told apart by identity, which is what a queue of them is searched by.
+    """
 
     name: str
     lock: threading.Lock = field(default_factory=threading.Lock)

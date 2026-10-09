@@ -704,7 +704,7 @@ its own arguments. Loads `coganchor` and nothing else of humanize. Semantics:
 
 ```text
 hmz internal anchor serve --export VIRTUAL[:REAL] [--export …]
-    (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT)
+    (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT | --peer-file FILE)
     [--token TOKEN] [--log-level {debug,info,warning,error}]
 ```
 
@@ -714,15 +714,16 @@ hmz internal anchor serve --export VIRTUAL[:REAL] [--export …]
 | `--stdio` | | Serve one session over stdin/stdout. |
 | `--listen [HOST:]PORT` | host `127.0.0.1` | Serve TCP connections. |
 | `--peer TICKET@HOST:PORT` | | Serve one session through a rendezvous broker. |
+| `--peer-file FILE` | | Serve one session after another through a rendezvous broker, each met with the `TICKET@HOST:PORT` in `FILE` (a docker secret), until stopped. |
 | `--token TOKEN` | `$HUMANIZE_TOKEN` | Shared secret required from clients. |
 | `--log-level` | `$HUMANIZE_LOG`, else `warning` | |
 
-Exactly one of `--stdio`, `--listen`, `--peer`.
+Exactly one of `--stdio`, `--listen`, `--peer`, `--peer-file`.
 
 | Exit | When |
 | --- | --- |
 | `0` | served until the session or the process ended |
-| `1` | cannot listen (`hmz: cannot listen on <host>:<port>: <why>`), or cannot dial the peer |
+| `1` | cannot listen (`hmz: cannot listen on <host>:<port>: <why>`), or cannot dial the peer, or no meeting in the `--peer-file` |
 | `2` | a bad `--export`; a malformed address (`hmz: malformed listen address '<a>'; expected [HOST:]PORT`); a non-loopback `--listen` without a token (`hmz: cannot listen on a non-loopback address without --token`). Loopback is `127.0.0.1`, `::1`, `localhost`. |
 
 ::: danger

@@ -356,6 +356,35 @@ def test_two_halves_met_through_a_broker_serve_a_session(
     assert found["target"] == f"peer://{meeting}"
 
 
+def test_a_standing_serving_half_serves_session_after_session(
+    broker: Broker, workspace: Path, tmp_path: Path
+) -> None:
+    meeting = Meeting(ticket(), *broker.address)
+    peer = tmp_path / "peer"
+    peer.write_text(f"{meeting}\n")
+    serving = subprocess.Popen(
+        [*SERVE, "--peer-file", str(peer), "--export", "/"],
+        stdin=subprocess.DEVNULL,
+    )
+    config = AnchorConfig(target=f"peer://{meeting}", workspace=str(workspace))
+    said: list[int] = []
+
+    def one() -> None:
+        said.append(anchor.check(config)["entries"])
+
+    try:
+        one()
+        many = [threading.Thread(target=one) for _ in range(4)]
+        for each in many:
+            each.start()
+        for each in many:
+            each.join(timeout=120)
+    finally:
+        stopped(serving)
+
+    assert said == [2, 2, 2, 2, 2]
+
+
 def test_a_broker_run_as_a_command_line_introduces_two_halves(workspace: Path) -> None:
     process, host, port = announced(
         [
