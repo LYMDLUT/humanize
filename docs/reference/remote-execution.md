@@ -771,8 +771,8 @@ machine, humanize books a meeting:
   halves connected that have not yet said a ticket it lets in, other than its own address.
 - Unless it is [sealed](#sealed-meetings), the protocol is not encrypted: tickets, and every
   relayed session, cross the network in the clear, and its broker belongs on a network whose
-  other machines are trusted with that. The broker for a harness on a third machine, and a
-  standalone one, are never sealed.
+  other machines are trusted with that. The broker humanize holds for booked meetings is
+  always sealed; the one for a harness on a third machine, and a standalone one, never are.
 - `hmz internal anchor rendezvous [--listen [HOST:]PORT] [--punching SECONDS]` runs a broker on
   its own (default `0.0.0.0:0`) and prints `hmz internal anchor rendezvous listening HOST PORT`
   on stderr.
@@ -805,6 +805,13 @@ pinned to; `DIR/key.pem`, where it is there, is that certificate's key.
 - A half that closes the session sends TLS's `close_notify` after the last of what it wrote,
   and the other half then reads end-of-file once it has read all of it. Whatever arrives at
   the half that closed after it did is discarded.
+- The broker humanize holds for booked meetings makes its key and certificate the first time
+  it is needed, with `openssl req -x509 -nodes -days 365 -newkey ec -pkeyopt
+  ec_paramgen_curve:prime256v1 -subj "/CN=humanize rendezvous"`, in a directory made `0700`
+  under `$TMPDIR/humanize-<uid>` (`/tmp` where `TMPDIR` is unset; the directory humanize keeps
+  for what is this machine's alone), the key `0600` from the moment it is written. One pair per
+  broker, which is one per run; the directory is removed as the process exits. Without
+  `openssl` on `PATH`: `FileNotFoundError: no openssl command here: openssl`.
 
 <small>Defined in [`src/hmz/coganchor/elsewhere.py`](https://github.com/humanfia/humanize/blob/main/src/hmz/coganchor/elsewhere.py) (`afar`, `_carried`), [`src/hmz/coganchor/rendezvous.py`](https://github.com/humanfia/humanize/blob/main/src/hmz/coganchor/rendezvous.py).</small>
 

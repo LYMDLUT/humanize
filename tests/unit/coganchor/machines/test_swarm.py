@@ -550,6 +550,9 @@ def test_stopping_removes_the_service_once(runs: Runs, handshake: Handshake) -> 
 #: The tickets every meeting is booked under, here: the serving half's, and the anchor's.
 SERVING, ANCHORING = "5e5e5e5e5e5e5e5e", "a0a0a0a0a0a0a0a0"
 
+#: Where this process's broker keeps its key and certificate, here.
+SEALED = "/run/user/me/rendezvous-x"
+
 
 @dataclass
 class Booking:
@@ -557,6 +560,7 @@ class Booking:
 
     asked: list[str] = field(default_factory=list[str])
     withdrawn: list[str] = field(default_factory=list[str])
+    tls: str = SEALED
 
     def stand(self) -> tuple[str, str]:
         return SERVING, ANCHORING
@@ -596,20 +600,29 @@ def test_a_task_that_dials_back_is_met_at_a_booked_meeting_its_ticket_kept_secre
     anchor = machine.start()
 
     assert broker.asked == ["192.0.2.213"]
-    # The anchor comes with a ticket of its own; the task is handed only the serving half's.
-    assert anchor.target == f"peer://{ANCHORING}@192.0.2.213:4242"
+    # The anchor comes with a ticket of its own, and the key beside the broker's certificate;
+    # the task is handed only the serving half's ticket, and the certificate alone.
+    assert anchor.target == f"peer://{ANCHORING}@192.0.2.213:4242?tls={SEALED}"
     assert handshake.asked == [anchor]
     (secret,) = runs.called("secret", "create")
     assert secret[-2:] == ["svc-peer", "-"]
-    assert runs.given[runs.calls.index(secret)] == f"{SERVING}@192.0.2.213:4242"
-    (config,) = runs.called("config", "create")
+    assert (
+        runs.given[runs.calls.index(secret)]
+        == f"{SERVING}@192.0.2.213:4242?tls=/humanize-tls"
+    )
+    certified, config = runs.called("config", "create")
+    assert certified[-2:] == ["svc-tls", f"{SEALED}/cert.pem"]
     assert config[-2:] == ["svc-hmz", str(swarm_module.bundled()[0])]
-    for one in (secret, config):
+    for one in (secret, certified, config):
         labels = after(one, "--label")
         assert {f"humanize={os.getuid()}", "owner=me", "team=t"} <= set(labels)
+    assert not [one for one in runs.calls if any("key.pem" in word for word in one)]
     (made,) = runs.called("service", "create")
     assert after(made, "--secret") == ["source=svc-peer,target=humanize-peer"]
-    assert after(made, "--config") == ["source=svc-hmz,target=/svc-hmz.pyz"]
+    assert after(made, "--config") == [
+        "source=svc-hmz,target=/svc-hmz.pyz",
+        "source=svc-tls,target=/humanize-tls/cert.pem",
+    ]
     command = made[made.index("img:1") + 1 :]
     assert command[:2] == ["/bin/sh", "-c"]
     assert '"/svc-hmz.pyz"' in command[2]
@@ -625,6 +638,7 @@ def test_a_task_that_dials_back_is_met_at_a_booked_meeting_its_ticket_kept_secre
     assert runs.called("service", "rm", "svc")
     assert runs.called("secret", "rm", "svc-peer")
     assert runs.called("config", "rm", "svc-hmz")
+    assert runs.called("config", "rm", "svc-tls")
     assert broker.withdrawn == [SERVING]
 
 
@@ -643,14 +657,18 @@ def test_a_task_that_dials_back_is_met_only_once_it_is_started(
 
     anchor = machine.start()
 
-    assert anchor.target == f"peer://{ANCHORING}@h:4242"
+    assert anchor.target == f"peer://{ANCHORING}@h:4242?tls={SEALED}"
     assert handshake.asked == [anchor]
     assert len(runs.called("service", "create")) == 1
     machine.stop()
 
 
 def test_what_a_service_dialling_back_is_created_with_is_named_after_it() -> None:
-    assert kept("svc") == (("secret", "svc-peer"), ("config", "svc-hmz"))
+    assert kept("svc") == (
+        ("secret", "svc-peer"),
+        ("config", "svc-hmz"),
+        ("config", "svc-tls"),
+    )
 
 
 @pytest.mark.parametrize("kind", ["secret", "config"])

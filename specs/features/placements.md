@@ -520,3 +520,5 @@ and with no switch to say it in the clear; a peer presenting any other certifica
 MUST be told nothing. The key MUST stay on the broker's machine, which MUST make it for the run,
 readable by its own user alone and never on a filesystem another machine mounts; the anchoring
 half MUST serve it on a punched socket, and what one half proves there MUST NOT prove the other.
+The broker a process holds for booked meetings, which a dialling swarm task meets, MUST be
+sealed.

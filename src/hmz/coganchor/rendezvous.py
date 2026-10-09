@@ -1085,6 +1085,14 @@ def standing(address: str) -> tuple[Broker, int]:
     not -- the address of a NAT in front of this machine, or a name only the other side
     resolves -- on every interface, as :func:`shared`'s does.
 
+    And sealed (:attr:`Broker.tls`), always: its meetings are with machines that are not
+    this one, over networks nothing here vouches for. Its key and certificate are made for it
+    -- for this run, that is -- under :func:`hmz.machine`, which is this machine's alone and
+    nobody else's to read, and are removed as the run ends. One per run rather than one kept
+    per runtime: a key that lives exactly as long as the one broker that uses it and the
+    tasks pinned to it -- which go with the run, or with the next one -- has nothing to
+    rotate, nothing to revoke, and nothing left to be worth anything to whoever finds it.
+
     Args:
       address: Where the serving halves reach this machine.
 
@@ -1092,13 +1100,15 @@ def standing(address: str) -> tuple[Broker, int]:
       The broker, started on first use and kept for the rest of the run, and its port.
 
     Raises:
-      OSError: If it cannot listen.
+      FileNotFoundError: If there is no `openssl` here to make its certificate with.
+      OSError: If it cannot listen, or its certificate could not be made.
     """
     with _SHARING:
         broker = _standings.get(address)
         if broker is None:
             port = int(os.environ.get("HUMANIZE_RENDEZVOUS_PORT", "0"))
-            broker = Broker(address, port, booked=True)
+            sealed = _minted()
+            broker = Broker(address, port, booked=True, tls=sealed)
             try:
                 broker.start()
             except OSError as error:
@@ -1106,10 +1116,60 @@ def standing(address: str) -> tuple[Broker, int]:
                     error.errno != errno.EADDRNOTAVAIL
                 ):
                     raise
-                broker = Broker(port=port, booked=True)
+                broker = Broker(port=port, booked=True, tls=sealed)
                 broker.start()
             _standings[address] = broker
         return broker, broker.address[1]
+
+
+def _minted() -> str:
+    """A directory only this user may enter, holding a key and a certificate made for it.
+
+    Made by `openssl`, which is wherever docker is, rather than by a cryptography package
+    humanize would otherwise carry for this alone; and with no name, no authority and no
+    extension in it worth checking, since nothing checks anything of it but that it is the
+    very certificate it is.
+
+    Returns:
+      The directory, which is removed when this process exits.
+
+    Raises:
+      FileNotFoundError: If there is no `openssl` here.
+      OSError: If it could not make them.
+    """
+    import atexit
+    import shutil
+    import subprocess
+    import tempfile
+
+    from hmz import machine
+
+    made = Path(tempfile.mkdtemp(prefix="rendezvous-", dir=machine()))
+    atexit.register(shutil.rmtree, made, ignore_errors=True)
+    try:
+        subprocess.run(
+            [
+                *("openssl", "req", "-x509", "-nodes", "-days", "365"),
+                *("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1"),
+                *("-subj", "/CN=humanize rendezvous"),
+                *("-keyout", str(made / _KEY), "-out", str(made / CERTIFICATE)),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=True,
+            # The key is this user's from the instant it exists, not from a chmod after.
+            umask=0o077,
+        )
+    except FileNotFoundError as error:
+        raise FileNotFoundError(
+            errno.ENOENT, "no openssl command here", "openssl"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        raise OSError(
+            f"openssl could not make a certificate: {error.stderr.strip()}"
+        ) from error
+    return str(made)
 
 
 # ------------------------------------------------------------------------ punching a hole

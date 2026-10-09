@@ -18,13 +18,16 @@ import os
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+import hmz
 from hmz.coganchor import AnchorConfig, anchor, transport
 from hmz.coganchor.remote import RemoteClient
 from hmz.coganchor.rendezvous import (
@@ -35,13 +38,13 @@ from hmz.coganchor.rendezvous import (
     Meeting,
     dial,
     meet,
+    standing,
     ticket,
 )
 from tests.integration.doubles_anchor import stopped
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 PATIENCE = 20.0
 
@@ -463,6 +466,23 @@ def test_whoever_reaches_a_punching_anchor_cannot_be_joined_by_saying_its_words_
     assert words["anchor"].split()[1:] == [expected.encode(), ANCHOR.encode()]
     assert not told_go.is_set()
     assert json.loads(words["direct"]) == {"direct": False}
+
+
+def test_the_broker_for_booked_meetings_is_sealed_with_a_key_of_this_machines_alone() -> (
+    None
+):
+    broker, port = standing("127.0.0.1")
+    at = Path(broker.tls)
+    assert at.parent == hmz.machine()
+    assert stat.S_IMODE(at.stat().st_mode) == 0o700
+    assert stat.S_IMODE((at / "key.pem").stat().st_mode) == 0o600
+    assert (at / CERTIFICATE).read_text().startswith("-----BEGIN CERTIFICATE-----")
+    assert at.stat().st_uid == os.getuid()
+    # And it is a broker that meets nobody in the clear.
+    serving, anchoring = broker.stand()
+    with pytest.raises(OSError, match=r"."):
+        dial(Meeting(anchoring, "127.0.0.1", port), ANCHOR, timeout=5)
+    broker.withdraw(serving)
 
 
 @pytest.mark.parametrize("window", [2.0, 0.0], ids=["punched", "carried"])

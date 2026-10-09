@@ -427,6 +427,7 @@ async def test_a_task_a_run_now_gone_left_goes_with_what_it_was_created_with(
         ["service", "rm", "humanize-c-gone"],
         ["secret", "rm", "humanize-c-gone-peer"],
         ["config", "rm", "humanize-c-gone-hmz"],
+        ["config", "rm", "humanize-c-gone-tls"],
     ]
     await driver.close()
 

@@ -14,7 +14,10 @@ process's own (:func:`hmz.coganchor.rendezvous.standing`) and is met there by ev
 the anchor opens, at a `peer://` target. The meeting is booked, so the ticket the task holds
 lets in its serving half alone and the anchor's ticket never leaves this machine; that ticket
 is a docker secret and the serving half a docker config, both the service's own, so neither
-is in its spec nor needs a path on its node.
+is in its spec nor needs a path on its node. And it is sealed: every byte between the task and
+this machine is TLS pinned to a certificate the broker made for this run, which is the third
+thing the service is created with -- a config, since it is no secret -- while its key never
+leaves this machine.
 
 The workspace is a bind mount of the path it already has, as it is for one daemon -- of the
 node's host now, which nobody can say in advance. So a swarm whose tasks may land on several
@@ -75,8 +78,12 @@ _IDLE = tuple(python_command(["-c", "import time; time.sleep(2**31)"]))
 #: What the secret holding a dialling task's meeting is called inside it, under /run/secrets.
 _PEER = "humanize-peer"
 
-#: What a dialling service's secret and config are called, after the service.
-_SECRET, _CONFIG = "-peer", "-hmz"
+#: What a dialling service's secret and its two configs -- the serving half, and the
+#: certificate its meeting is sealed with -- are called, after the service.
+_SECRET, _CONFIG, _SEALED = "-peer", "-hmz", "-tls"
+
+#: Where a dialling task finds that certificate, as a meeting names the directory holding it.
+_TLS = "/humanize-tls"
 
 #: Marks a service as one of ours, and whose: the label :mod:`.docker` marks a container with.
 _LABEL = "humanize"
@@ -234,17 +241,21 @@ class Placed:
     daemon: Endpoint
 
 
-def kept(service: str) -> tuple[tuple[str, str], tuple[str, str]]:
+def kept(service: str) -> tuple[tuple[str, str], ...]:
     """What a service dialling back is created with beside itself, to be removed with it.
 
     Args:
       service: The service's name.
 
     Returns:
-      Its secret and its config, each as `(kind, name)`, which `docker <kind> rm <name>`
-      removes.
+      Its secret and its two configs, each as `(kind, name)`, which `docker <kind> rm
+      <name>` removes.
     """
-    return ("secret", f"{service}{_SECRET}"), ("config", f"{service}{_CONFIG}")
+    return (
+        ("secret", f"{service}{_SECRET}"),
+        ("config", f"{service}{_CONFIG}"),
+        ("config", f"{service}{_SEALED}"),
+    )
 
 
 def swarm_of(told: Mapping[str, Any], where: str) -> str:
@@ -462,16 +473,17 @@ class Swarm(MachineBase):
           The service's id.
 
         Raises:
-          FileNotFoundError: If there is no `docker` here, or the manager's host, asked
-            whose the workspace is, has no such directory.
-          RuntimeError: If the service -- or, dialling back, its secret or config -- could
+          FileNotFoundError: If there is no `docker` here -- or, dialling back, no `openssl`
+            -- or the manager's host, asked whose the workspace is, has no such directory.
+          RuntimeError: If the service -- or, dialling back, its secret or configs -- could
             not be created.
           TimeoutError: If the manager did not answer in time: 60 seconds for what it is, and
             600 for creating the service. A service it creates after all, once it was given
             up on, has no id here to be removed by: whoever named it can look for it by
             that name.
           OSError: If the manager could not be asked, or manages no active swarm -- or,
-            dialling back, this process cannot listen for the task.
+            dialling back, this process cannot listen for the task, or the certificate or
+            the archive cannot be had.
         """
         if self._service:
             return self._service
@@ -546,10 +558,11 @@ class Swarm(MachineBase):
           the `peer://` meeting its serving half comes to.
 
         Raises:
-          FileNotFoundError: If there is no `docker` here, or the node the task landed on --
-            or the manager's host, asked whose the workspace is -- has no such directory.
+          FileNotFoundError: If there is no `docker` here -- or, dialling back, no `openssl`
+            -- or the node the task landed on -- or the manager's host, asked whose the
+            workspace is -- has no such directory.
           Unplaced: If no node took the task in time.
-          RuntimeError: If the service -- or, dialling back, its secret or config -- could
+          RuntimeError: If the service -- or, dialling back, its secret or configs -- could
             not be created, or its task failed, or what came up is not the machine these
             settings promised.
           OSError: If the manager or the node could not be asked, or the container cannot
@@ -578,7 +591,7 @@ class Swarm(MachineBase):
         return anchor
 
     def stop(self) -> None:
-        """Removes the service, its task, its secret and its config, and cancels its meeting.
+        """Removes the service, its task, its secret and its configs, and cancels its meeting.
 
         The workspace is left as it was left.
         """
@@ -604,20 +617,24 @@ class Swarm(MachineBase):
         """What a task that dials back is created with, and the meeting it is met at.
 
         The meeting is booked with a broker of this process's own, as the nodes reach this
-        machine. The serving half's ticket goes in a secret of the service's own, so that it
-        is in no spec anybody can inspect; the serving half itself in a config of its own.
-        Both carry the service's labels, its owner's among them, and go with it.
+        machine, and sealed with its certificate. The serving half's ticket goes in a secret
+        of the service's own, so that it is in no spec anybody can inspect; the serving half
+        itself in a config of its own, and the certificate -- which is all the task is told
+        of the broker's TLS, the key staying here -- in another. All three carry the
+        service's labels, its owner's among them, and go with it.
 
         Args:
-          name: The service's name, which its secret and config are named for.
+          name: The service's name, which its secret and configs are named for.
 
         Returns:
           The meeting as the anchor comes to it, what `docker service create` is told for
           it, and the command the task runs.
 
         Raises:
-          OSError: If this process cannot listen for the task, or the archive cannot be had.
-          RuntimeError: If the manager would not take the secret or the config.
+          FileNotFoundError: If there is no `openssl` here to make the certificate with.
+          OSError: If this process cannot listen for the task, or the certificate or the
+            archive cannot be had.
+          RuntimeError: If the manager would not take the secret or a config.
         """
         from hmz.coganchor import rendezvous
 
@@ -625,18 +642,23 @@ class Swarm(MachineBase):
         broker, port = rendezvous.standing(host)
         serving, anchoring = broker.stand()
         self._booked = (broker, serving)
-        (_, secret), (_, config) = kept(name)
+        (_, secret), (_, config), (_, sealed) = kept(name)
         self._create(
-            "secret", secret, "-", str(rendezvous.Meeting(serving, host, port))
+            "secret", secret, "-", str(rendezvous.Meeting(serving, host, port, _TLS))
         )
+        self._create("config", sealed, str(Path(broker.tls) / rendezvous.CERTIFICATE))
         archive, _ = bundled()
         self._create("config", config, str(archive))
         bundle = f"/{config}.pyz"
         return (
-            rendezvous.Meeting(anchoring, host, port),
+            rendezvous.Meeting(anchoring, host, port, broker.tls),
             [
                 *("--secret", f"source={secret},target={_PEER}"),
                 *("--config", f"source={config},target={bundle}"),
+                *(
+                    "--config",
+                    f"source={sealed},target={_TLS}/{rendezvous.CERTIFICATE}",
+                ),
             ],
             python_command(
                 [
