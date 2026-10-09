@@ -7,13 +7,17 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from hmz.coganchor import rendezvous
 from hmz.coganchor.machines import Allocation, Swarm, SwarmConfig
+from hmz.coganchor.machines import swarm as swarm_module
 from hmz.coganchor.machines.docker import CPUS, GPUS, MEMORY, bound
 from hmz.coganchor.machines.swarm import Node, Unplaced, nodes, services, swarm_of
 from hmz.coganchor.places import ISOLATED, MANAGED, REMOTE, SUPERVISED
 from hmz.coganchor.transport import Endpoint
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tests.unit.coganchor.machines.conftest import Handshake, Runs
 
 ME = f"{os.getuid()}:{os.getgid()}"
@@ -531,3 +535,109 @@ def test_stopping_removes_the_service_once(runs: Runs, handshake: Handshake) -> 
     machine.stop()
 
     assert len(runs.called("service", "rm", "svc")) == 1
+
+
+# -------------------------------------------------------------------------- dialling back
+
+#: The ticket every meeting is booked under, here.
+TICKET = "f00dfeedf00dfeed"
+
+
+@pytest.fixture
+def broker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
+    """This process's broker, an archive of digest `abc`, and every ticket, faked."""
+    advertised: list[str] = []
+    archive = tmp_path / "humanize-abc.pyz"
+    archive.write_bytes(b"PK")
+
+    def shared(advertise: str = "") -> tuple[None, str, int]:
+        advertised.append(advertise)
+        return None, advertise, 4242
+
+    monkeypatch.setattr(rendezvous, "shared", shared)
+    monkeypatch.setattr(rendezvous, "ticket", lambda: TICKET)
+    monkeypatch.setattr(swarm_module, "bundled", lambda: (archive, "abc"))
+    return advertised
+
+
+def test_a_task_that_dials_back_is_met_at_its_meeting_with_the_ticket_kept_secret(
+    runs: Runs, handshake: Handshake, broker: list[str]
+) -> None:
+    a_swarm(runs, task("running", on="n1"), landed_on=node("n1", "box"))
+    machine = SwarmConfig(
+        image="img:1", workspace="/w", name="svc", dial_back="192.0.2.213"
+    ).create()
+
+    anchor = machine.start()
+
+    assert broker == ["192.0.2.213"]
+    assert anchor.target == f"peer://{TICKET}@192.0.2.213:4242"
+    assert handshake.asked == [anchor]
+    (secret,) = runs.called("secret", "create")
+    assert secret[-2:] == ["svc-peer", "-"]
+    assert runs.given[runs.calls.index(secret)] == f"{TICKET}@192.0.2.213:4242"
+    assert f"humanize={os.getuid()}" in after(secret, "--label")
+    (config,) = runs.called("config", "create")
+    assert config[-2:] == ["humanize-abc", str(swarm_module.bundled()[0])]
+    (made,) = runs.called("service", "create")
+    assert after(made, "--secret") == ["source=svc-peer,target=humanize-peer"]
+    assert after(made, "--config") == ["source=humanize-abc,target=/humanize-abc.pyz"]
+    command = made[made.index("img:1") + 1 :]
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert '"/humanize-abc.pyz"' in command[2]
+    assert command[4:] == [
+        *("internal", "anchor", "serve"),
+        *("--peer-file", "/run/secrets/humanize-peer", "--export", "/"),
+    ]
+    assert not [one for one in runs.calls if any(TICKET in word for word in one)]
+
+    machine.stop()
+
+    assert runs.called("service", "rm", "svc")
+    assert runs.called("secret", "rm", "svc-peer")
+    assert runs.called("config", "rm") == []
+
+
+def test_a_task_that_dials_back_is_met_only_once_it_is_started(
+    runs: Runs, handshake: Handshake, broker: list[str]
+) -> None:
+    a_swarm(runs, task("running"))
+    machine = SwarmConfig(workspace="/w", name="svc", dial_back="h").create()
+
+    machine.submit()
+
+    assert len(runs.called("secret", "create")) == 1
+    assert runs.called("service", "ps") == []
+    assert handshake.asked == []
+
+    anchor = machine.start()
+
+    assert anchor.target == f"peer://{TICKET}@h:4242"
+    assert handshake.asked == [anchor]
+    assert len(runs.called("service", "create")) == 1
+    machine.stop()
+
+
+def test_a_serving_half_already_on_the_swarm_is_the_one_used(
+    runs: Runs, handshake: Handshake, broker: list[str]
+) -> None:
+    a_swarm(runs, task("running"))
+    runs.on("config", "create", status=1, err="config humanize-abc already exists")
+
+    anchor = SwarmConfig(workspace="/w", dial_back="h").create().start()
+
+    assert anchor.target == f"peer://{TICKET}@h:4242"
+
+
+@pytest.mark.parametrize("kind", ["secret", "config"])
+def test_a_task_whose_meeting_or_serving_half_is_refused_is_not_created(
+    runs: Runs, handshake: Handshake, broker: list[str], kind: str
+) -> None:
+    a_swarm(runs, task("running"))
+    runs.on(kind, "create", status=1, err="permission denied")
+    machine = SwarmConfig(workspace="/w", name="svc", dial_back="h").create()
+
+    with pytest.raises(RuntimeError, match=f"could not create a {kind}.*denied"):
+        machine.start()
+    assert runs.called("service", "create") == []
+    assert len(runs.called("secret", "rm", "svc-peer")) == (kind == "config")

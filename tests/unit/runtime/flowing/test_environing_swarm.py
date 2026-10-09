@@ -195,6 +195,11 @@ def _free(provider: str) -> bool:
         return True
 
 
+@dataclass(frozen=True)
+class _Anchor:
+    target: str
+
+
 class _Config:
     made: list[dict[str, Any]]
     stopped: int
@@ -217,11 +222,15 @@ class _Config:
             raise self.refuses
         return "svc"
 
-    def start(self) -> None:
+    def start(self) -> _Anchor:
         type(self).done.append(("start", _free(self.provider)))
         if self.fails is not None:
             raise self.fails
         self.placed = _Placed("task.1.abc", "ssh://node-2")
+        dialled = type(self).made[-1].get("dial_back")
+        return _Anchor(
+            f"peer://t@{dialled}:9" if dialled else "docker://task.1.abc@ssh://node-2"
+        )
 
     def stop(self) -> None:
         type(self).stopped += 1
@@ -371,6 +380,26 @@ async def test_a_manager_that_does_not_create_in_time_is_given_up_on_and_its_mak
         [["service", "rm", "svc-1"]] if removed else []
     )
     assert manager.done == [("submit", False)]
+
+
+async def test_a_task_on_a_runtime_dialling_back_is_reached_at_its_meeting(
+    manager: type[_Config],
+) -> None:
+    stored = runtime(Runtime(name="c", dial_back="192.0.2.213"))
+    machine = SwarmMachine("c", PurePosixPath("/srv/x"), stored=stored)
+    driver = MachineEnvDriver(machine, PurePosixPath("/work"))
+
+    await driver.probe()
+
+    (made,) = manager.made
+    assert made["dial_back"] == "192.0.2.213"
+    assert manager.done == [("submit", False), ("start", True)]
+    assert machine.target == "peer://t@192.0.2.213:9"
+    placed = machine.placement(PurePosixPath("/srv/x")).machine
+    assert isinstance(placed, AnchoredConfig)
+    assert placed.anchor.target == machine.target
+    assert machine.over == "a dial-back"
+    await driver.close()
 
 
 async def test_a_task_no_node_took_is_a_resource_unmet(manager: type[_Config]) -> None:
