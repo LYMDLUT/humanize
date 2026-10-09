@@ -473,8 +473,9 @@ Python at `PATH`, absolute or under `~/`, before any other.
 
 **9.1.11** `tcp://HOST:PORT` MUST name a serving half listening at that address.
 
-**9.1.12** `peer://TICKET@HOST:PORT` MUST name a serving half waiting at the broker at
-`HOST:PORT` under `TICKET`.
+**9.1.12** `peer://TICKET@HOST:PORT[?tls=DIR]` MUST name a serving half waiting at the broker
+at `HOST:PORT` under `TICKET`; with `DIR`, at a sealed meeting (§10.8) pinned to the
+certificate in `DIR`.
 
 **9.1.13** A `peer://` target given together with a harness machine other than this machine
 MUST be refused with `ValueError`.
@@ -512,3 +513,10 @@ file that only the user can read.
 
 **10.7** A broker ticket MUST be unguessable, MUST be the whole of what authenticates a peer at
 the broker, and MUST pair only the two halves presenting it.
+
+**10.8** A sealed meeting MUST carry every byte of every connection it has -- to the broker,
+punched and relayed -- inside TLS 1.3 pinned to its one certificate, said before anything else
+and with no switch to say it in the clear; a peer presenting any other certificate, or none,
+MUST be told nothing. The key MUST stay on the broker's machine, which MUST make it for the run,
+readable by its own user alone and never on a filesystem another machine mounts; the anchoring
+half MUST serve it on a punched socket, and what one half proves there MUST NOT prove the other.

@@ -663,7 +663,7 @@ its own arguments. Loads `coganchor` and nothing else of humanize. Semantics:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--target URL` | `$HUMANIZE_TARGET`, else `local` | `ssh://HOST`, `docker://CONTAINER[?OPTIONS][@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT`, or `local[:DIR]`. |
+| `--target URL` | `$HUMANIZE_TARGET`, else `local` | `ssh://HOST`, `docker://CONTAINER[?OPTIONS][@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT[?tls=DIR]`, or `local[:DIR]`. |
 | `--harness WHERE` | `$HUMANIZE_HARNESS`, else `local` | Where the agent process and its supervisor run: `local`, `same` (wherever `--target` is), or a target spelling. |
 | `--broker HOST` | `$HUMANIZE_RENDEZVOUS`, else this machine's outward-facing address | Where the two halves dial to be introduced, when harness and target differ. |
 | `--workspace PATH` | the current directory | The project directory as it exists on the target. |
@@ -704,7 +704,7 @@ its own arguments. Loads `coganchor` and nothing else of humanize. Semantics:
 
 ```text
 hmz internal anchor serve --export VIRTUAL[:REAL] [--export …]
-    (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT | --peer-file FILE)
+    (--stdio | --listen [HOST:]PORT | --peer TICKET@HOST:PORT[?tls=DIR] | --peer-file FILE)
     [--token TOKEN] [--log-level {debug,info,warning,error}]
 ```
 
@@ -713,8 +713,8 @@ hmz internal anchor serve --export VIRTUAL[:REAL] [--export …]
 | `--export VIRTUAL[:REAL]` | — | **Required, repeatable.** A directory: `VIRTUAL` as the agent sees it, `REAL` where it is here. |
 | `--stdio` | | Serve one session over stdin/stdout. |
 | `--listen [HOST:]PORT` | host `127.0.0.1` | Serve TCP connections. |
-| `--peer TICKET@HOST:PORT` | | Serve one session through a rendezvous broker. |
-| `--peer-file FILE` | | Serve one session after another through a rendezvous broker, each met with the `TICKET@HOST:PORT` in `FILE` (a docker secret), until stopped; each session is served only what it asked for of the `--export`s. |
+| `--peer TICKET@HOST:PORT[?tls=DIR]` | | Serve one session through a rendezvous broker; with `DIR`, over TLS pinned to `DIR/cert.pem`. |
+| `--peer-file FILE` | | Serve one session after another through a rendezvous broker, each met with the `TICKET@HOST:PORT[?tls=DIR]` in `FILE` (a docker secret), until stopped; each session is served only what it asked for of the `--export`s. |
 | `--token TOKEN` | `$HUMANIZE_TOKEN` | Shared secret required from clients. |
 | `--log-level` | `$HUMANIZE_LOG`, else `warning` | |
 

@@ -51,12 +51,24 @@ The whole of it is IPv4 and deliberately so: a hole is punched from one port to 
 and a candidate the other half cannot open a matching socket for is a candidate that only
 spends the window. A machine reachable only over IPv6 relays, which is the answer this already
 has for every other unreachable pair.
+
+**And a meeting may be sealed.** One that names a certificate (`?tls=DIR`) is held over TLS
+1.3 end to end: every connection to the broker, and every punched one, before a word of this
+protocol is said on it. Nothing is asked of an authority or of a name -- the certificate is
+made for one broker of one run and handed to each half by whoever started it, so the one
+question worth asking of a peer is whether it presented *exactly that one*, which nothing
+without its key can do. The broker holds the key, and so does every anchoring half, which is
+on the broker's machine: on a punched socket the anchoring half is the TLS server whichever
+end dialled, and the serving half -- on a machine where anything that runs may read what it
+was handed -- is only ever a client that checks. Tickets and keys are said inside it as
+before, so holding the certificate is no more a way in than holding the ticket was.
 """
 
 from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import hashlib
 import hmac
 import json
@@ -64,17 +76,22 @@ import logging
 import os
 import queue
 import secrets
+import select
 import socket
+import ssl
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qsl, quote
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 __all__ = [
     "ANCHOR",
+    "CERTIFICATE",
     "SERVE",
     "Broker",
     "Meeting",
@@ -188,6 +205,11 @@ _LINE = 1 << 16
 #: How much is moved at a time when the broker is carrying the session itself.
 _RELAY = 1 << 16
 
+#: What a sealed meeting's directory holds: the certificate every half pins, and -- on the
+#: broker's machine alone -- the key it was made with.
+CERTIFICATE = "cert.pem"
+_KEY = "key.pem"
+
 
 def ticket() -> str:
     """Mints a name for one meeting, which is also the secret that gets into it.
@@ -208,15 +230,19 @@ class Meeting:
         of either, so a ticket is the whole of what may not be shared.
       host: Where the broker is, as both halves can reach it.
       port: The port it is listening on.
+      tls: For a sealed meeting, the directory holding the certificate it is pinned to
+        (:data:`CERTIFICATE`) -- and, for a half on the broker's machine, the key beside it;
+        "" for a meeting held in the clear.
     """
 
     ticket: str
     host: str
     port: int
+    tls: str = ""
 
     @classmethod
     def parse(cls, spec: str) -> Meeting:
-        """Reads a meeting out of its `TICKET@HOST:PORT` spelling.
+        """Reads a meeting out of its `TICKET@HOST:PORT[?tls=DIR]` spelling.
 
         Args:
           spec: The spelling, as a `peer://` target carries it.
@@ -227,14 +253,26 @@ class Meeting:
         Raises:
           ValueError: If it is not one.
         """
-        name, at, authority = spec.partition("@")
+        name, at, rest = spec.partition("@")
+        authority, mark, query = rest.partition("?")
         host, colon, port = authority.rpartition(":")
-        if not (name and at and host and colon and port.isdigit()):
-            raise ValueError(f"malformed meeting {spec!r}; expected TICKET@HOST:PORT")
-        return cls(name, host.strip("[]"), int(port))
+        try:
+            said = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+        except ValueError:
+            said = []
+        # One thing may be said after a `?`, once, and it is a directory.
+        tls = said[0][1] if len(said) == 1 and said[0][0] == "tls" else ""
+        if not (name and at and host and colon and port.isdigit()) or (
+            mark and not tls
+        ):
+            raise ValueError(
+                f"malformed meeting {spec!r}; expected TICKET@HOST:PORT[?tls=DIR]"
+            )
+        return cls(name, host.strip("[]"), int(port), tls)
 
     def __str__(self) -> str:
-        return f"{self.ticket}@{self.host}:{self.port}"
+        said = f"{self.ticket}@{self.host}:{self.port}"
+        return f"{said}?tls={quote(self.tls, safe='/')}" if self.tls else said
 
 
 def dial(
@@ -264,9 +302,11 @@ def dial(
       :meth:`~hmz.coganchor.proto.Channel.from_socket`.
 
     Raises:
-      ValueError: If `role` is not one of the two.
-      OSError: If the broker cannot be reached, the other half never arrives, or the two
-        could be neither introduced nor carried.
+      ValueError: If `role` is not one of the two, or a sealed meeting's certificate is not
+        one.
+      OSError: If the broker cannot be reached -- or, at a sealed meeting, is not the one its
+        certificate pins -- the other half never arrives, or the two could be neither
+        introduced nor carried.
     """
     return meet(meeting, role, timeout=timeout, asks=asks)[0]
 
@@ -297,12 +337,15 @@ def meet(
       anchoring half asked for -- empty where it asked for none, and for an anchoring half.
 
     Raises:
-      ValueError: If `role` is not one of the two.
-      OSError: If the broker cannot be reached or will not let this half in, the other half
-        never arrives, or the two could be neither introduced nor carried.
+      ValueError: If `role` is not one of the two, or a sealed meeting's certificate is not
+        one.
+      OSError: If a sealed meeting's certificate cannot be read, the broker cannot be
+        reached, is not the one that certificate pins, or will not let this half in, the
+        other half never arrives, or the two could be neither introduced nor carried.
     """
     if role not in ROLES:
         raise ValueError(f"unsupported role {role!r}; expected {ANCHOR} or {SERVE}")
+    sealing = _sealing(meeting.tls) if meeting.tls else None
     # One port for both, taken before either is used for anything: the broker has to see this
     # half at the port its peer will be sent at, and the peer has to find something listening
     # there. Which of the two is opened first matters, and it is the listener -- see `_both`.
@@ -311,12 +354,11 @@ def meet(
     try:
         home.settimeout(timeout)
         home.connect((meeting.host, meeting.port))
+        at = _mine(home, port)
+        if sealing is not None:
+            home = sealing.sealed(home, server=False, timeout=_ANSWERING)
         lines = _Lines(home)
-        hello: dict[str, Any] = {
-            "ticket": meeting.ticket,
-            "role": role,
-            "at": _mine(home, port),
-        }
+        hello: dict[str, Any] = {"ticket": meeting.ticket, "role": role, "at": at}
         if key:
             hello["key"] = key
         if asks:
@@ -348,9 +390,18 @@ def meet(
         # What the two prove to each other on a punched socket: the ticket, unless the broker
         # says otherwise -- which it does for a booked meeting, whose halves hold two.
         proof = str(said.get("proof") or meeting.ticket)
-        punched = _punch(
-            ear, port, said["peer"], proof, role, float(said.get("punch", 0.0))
-        )
+        # A sealed anchoring half without the key cannot be the server of a punched socket,
+        # and is carried instead: the one thing it cannot be is joined in the clear.
+        if sealing is None or role == SERVE or sealing.server is not None:
+            punched = _punch(
+                ear,
+                port,
+                said["peer"],
+                proof,
+                role,
+                float(said.get("punch", 0.0)),
+                sealing,
+            )
         _say(home, {"direct": punched is not None})
         # The broker's word rather than this half's: one end can have a socket the other end
         # never learned it had, and two halves disagreeing about which pipe the session is on
@@ -403,6 +454,7 @@ class Broker:
         patience: float = PAIRING,
         punching: float = PUNCHING,
         booked: bool = False,
+        tls: str = "",
     ) -> None:
         """Prepares a broker, without listening yet.
 
@@ -415,12 +467,22 @@ class Broker:
           booked: Whether it introduces only the halves of meetings booked with it
             (:meth:`stand`), turning away every other ticket -- and counting what each
             address has connected without saying one (:data:`_KNOCKING`).
+          tls: The directory holding its certificate and key, for a broker that speaks to
+            nothing but TLS pinned to that certificate; "" for one in the clear.
+
+        Raises:
+          OSError: If its certificate or key cannot be read.
+          ValueError: If either is not one, or the directory holds no key.
         """
         self._host = host
         self._port = port
         self._patience = patience
         self._punching = punching
         self._booked = booked
+        self._tls = tls
+        self._sealing = _sealing(tls) if tls else None
+        if self._sealing is not None and self._sealing.server is None:
+            raise ValueError(f"{tls} holds a certificate and no key to serve it with")
         self._lock = threading.Lock()
         #: The meetings still waiting for a half, by ticket, oldest first.
         self._meetings: dict[str, list[_Pair]] = {}
@@ -447,6 +509,16 @@ class Broker:
         would be better off on a network that lets them meet.
         """
         return self._carried
+
+    @property
+    def tls(self) -> str:
+        """The directory of the certificate it is pinned to, or "" for a broker in the clear.
+
+        What a meeting held here is spelled with (:attr:`Meeting.tls`): as it is, for a half
+        on this machine, which the key beside the certificate makes the server of a punched
+        socket; and for a half elsewhere, wherever its :data:`CERTIFICATE` alone is put.
+        """
+        return self._tls
 
     @property
     def address(self) -> tuple[str, int]:
@@ -548,13 +620,17 @@ class Broker:
 
     def _introduce(self, half: socket.socket, whence: tuple[str, int]) -> None:
         """Takes one half from its first word to its last, whichever way it ends."""
-        lines = _Lines(half)
         pair: _Pair | None = None
         role = ""
         knocking = self._knock(whence[0])
         try:
             if knocking is None:
                 return
+            if self._sealing is not None:
+                # Before a word is read: a half that will not speak TLS -- or speaks it to
+                # somebody else's certificate -- is gone without having said anything.
+                half = self._sealing.sealed(half, server=True, timeout=_ANSWERING)
+            lines = _Lines(half)
             hello = lines.read(_ANSWERING)
             name, role = str(hello.get("ticket", "")), str(hello.get("role", ""))
             asks = _asked(hello.get("export")) if role == ANCHOR else ()
@@ -1046,6 +1122,7 @@ def _punch(
     name: str,
     role: str,
     seconds: float,
+    sealing: _Sealing | None = None,
 ) -> socket.socket | None:
     """Opens holes at every address the other half gave, and listens for its own.
 
@@ -1063,6 +1140,7 @@ def _punch(
       name: The ticket, which neither half puts on the wire.
       role: Which half this is.
       seconds: How long to keep trying.
+      sealing: For a sealed meeting, the TLS every punched socket is to be held in.
 
     Returns:
       The socket joining the two, or None if the window closed with nothing through it.
@@ -1082,7 +1160,7 @@ def _punch(
     threads = [
         threading.Thread(
             target=_knocking,
-            args=(where, port, name, role, won, claimed, stop, deadline),
+            args=(where, port, name, role, sealing, won, claimed, stop, deadline),
             daemon=True,
         )
         for where in where_to
@@ -1091,7 +1169,7 @@ def _punch(
         threads.append(
             threading.Thread(
                 target=_answering,
-                args=(ear, name, role, won, claimed, stop, deadline),
+                args=(ear, name, role, sealing, won, claimed, stop, deadline),
                 daemon=True,
             )
         )
@@ -1118,6 +1196,7 @@ def _knocking(
     port: int,
     name: str,
     role: str,
+    sealing: _Sealing | None,
     won: queue.Queue[socket.socket],
     claimed: threading.Lock,
     stop: threading.Event,
@@ -1146,7 +1225,7 @@ def _knocking(
             stop.wait(0.05)
             continue
         log.debug("opened outward to %s", where)
-        _greet(knock, name, role, won, claimed)
+        _greet(knock, name, role, sealing, won, claimed)
         return
 
 
@@ -1154,6 +1233,7 @@ def _answering(
     ear: socket.socket,
     name: str,
     role: str,
+    sealing: _Sealing | None,
     won: queue.Queue[socket.socket],
     claimed: threading.Lock,
     stop: threading.Event,
@@ -1169,7 +1249,7 @@ def _answering(
         log.debug("something arrived on the shared port")
         threading.Thread(
             target=_greet,
-            args=(arrived, name, role, won, claimed),
+            args=(arrived, name, role, sealing, won, claimed),
             daemon=True,
         ).start()
 
@@ -1178,24 +1258,37 @@ def _greet(
     punched: socket.socket,
     name: str,
     role: str,
+    sealing: _Sealing | None,
     won: queue.Queue[socket.socket],
     claimed: threading.Lock,
 ) -> None:
     """Proves a connection is the other half of this session, and settles who keeps it.
 
-    Both ends say the same thing first -- this protocol, the ticket's digest, which half they
-    are -- so a connection to anything else, and a connection to one's own listener, is over
-    before either end has told it anything. What follows decides between the several sockets
-    that may have got through at once: the anchoring half offers each one it has and the
-    serving half accepts exactly one, which is an agreement neither can reach alone.
+    Both ends say the same thing first -- this protocol, a digest of the secret bound to which
+    half they are, which half they are -- so a connection to anything else, and a connection
+    to one's own listener, is over before either end has told it anything. Bound to the half,
+    so that what one end says cannot be said back to it: whoever reaches a listening half
+    hears that half's proof, and must still answer with the other's. What follows decides
+    between the several sockets that may have got through at once: the anchoring half offers
+    each one it has and the serving half accepts exactly one, which is an agreement neither
+    can reach alone.
+
+    On a sealed meeting all of it is said inside TLS, of which the anchoring half is the
+    server, whichever end dialled: its machine holds the key, and a serving half greets only
+    a socket presenting the certificate it was handed.
     """
     kept = False
     try:
+        if sealing is not None:
+            punched = sealing.sealed(punched, server=role == ANCHOR, timeout=GREETING)
         punched.settimeout(GREETING)
-        proof = hashlib.sha256(name.encode()).hexdigest().encode()
-        punched.sendall(b" ".join((_MAGIC, proof, role.encode())) + b"\n")
-        said = _line(punched, GREETING).split()
-        if said[:2] != [_MAGIC, proof] or said[2:3] != [_OPPOSITE[role].encode()]:
+        punched.sendall(b" ".join((_MAGIC, _proof(name, role), role.encode())) + b"\n")
+        other = _OPPOSITE[role]
+        if _line(punched, GREETING).split() != [
+            _MAGIC,
+            _proof(name, other),
+            other.encode(),
+        ]:
             return
         if role == ANCHOR:
             punched.sendall(_GO + b"\n")
@@ -1216,7 +1309,7 @@ def _greet(
         kept = True
         won.put(punched)
     except (OSError, ValueError, IndexError) as exc:
-        log.debug("a greeting at %s came to nothing: %s", punched.getsockname(), exc)
+        log.debug("a greeting came to nothing: %s", exc)
         return
     finally:
         if not kept:
@@ -1224,6 +1317,11 @@ def _greet(
             # a thread nothing is waiting on, and a socket left for somebody else to sweep is
             # one nobody sweeps.
             punched.close()
+
+
+def _proof(name: str, role: str) -> bytes:
+    """What a half proves on a punched socket: that it knows the secret, and is that half."""
+    return hmac.new(name.encode(), role.encode(), hashlib.sha256).hexdigest().encode()
 
 
 # ------------------------------------------------------------------------------- sockets
@@ -1286,9 +1384,14 @@ def _both() -> tuple[socket.socket, socket.socket | None, int]:
 
 
 def _settled(held: socket.socket) -> socket.socket:
-    """Hands a socket on as the session wants it: blocking, with nothing timing it out."""
+    """Hands a socket on as the session wants it: blocking, with nothing timing it out.
+
+    And sending at once, where it is the connection itself; a sealed one is a socket of this
+    machine's own, whose connection :meth:`_Sealing.sealed` has already told the same.
+    """
     held.settimeout(None)
-    held.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    if held.family == socket.AF_INET:
+        held.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     return held
 
 
@@ -1377,6 +1480,311 @@ def _asked(said: Any) -> tuple[str, ...] | None:
     ):
         return None
     return tuple(cast("list[str]", asked))
+
+
+# ------------------------------------------------------------------------------- sealing
+
+
+@dataclass(frozen=True, slots=True)
+class _Sealing:
+    """TLS for the meetings of one certificate, pinned to that certificate byte for byte.
+
+    No authority vouches for it and no name is checked against it. It was made for one
+    broker of one run and handed to each half by whoever started that half, so whether a peer
+    presented *it* is the whole question -- and a peer can only present it by holding its key,
+    which the TLS handshake makes it prove. That is also why the chain is not verified: a lone
+    self-signed certificate is judged differently by each OpenSSL and each Python's strictness
+    about its extensions, and the answer to the one question that matters is the same in all
+    of them.
+
+    Attributes:
+      pinned: The certificate, DER-encoded, as a peer must present it.
+      client: The context a half that checks the other is sealed with.
+      server: The context a half holding the key is sealed with; None where it holds none.
+    """
+
+    pinned: bytes
+    client: ssl.SSLContext
+    server: ssl.SSLContext | None
+
+    def sealed(
+        self, raw: socket.socket, *, server: bool, timeout: float
+    ) -> socket.socket:
+        """Holds a connection in TLS, and answers with a socket carrying what it opens.
+
+        The handshake is done here, within `timeout`; from then on one thread of its own does
+        everything TLS on the connection (:func:`_pump`), and the socket answered is one end
+        of a pair of this machine's, the thread holding the other -- a socket like any other,
+        which this module's lines, its relay and the session above can each use as they
+        would the connection itself.
+
+        Args:
+          raw: The connection, which is the answer's from here on and closed with it, or
+            closed here if it cannot be sealed.
+          server: Whether this end serves the certificate -- and so must hold its key --
+            rather than checking the other end's against it.
+          timeout: How long the handshake may take.
+
+        Returns:
+          The socket carrying the connection's plaintext.
+
+        Raises:
+          OSError: If the handshake fails or does not finish in time, the other end is not
+            speaking TLS, or -- checking -- what it presented is not the certificate pinned.
+          ValueError: If this end is to serve the certificate and holds no key.
+        """
+        context = self.server if server else self.client
+        if context is None:
+            raw.close()
+            raise ValueError("this half holds no key to serve its meeting's TLS with")
+        inbound, outbound = ssl.MemoryBIO(), ssl.MemoryBIO()
+        tls = context.wrap_bio(inbound, outbound, server_side=server)
+        try:
+            _handshake(
+                raw,
+                tls,
+                (inbound, outbound),
+                pinned=None if server else self.pinned,
+                timeout=timeout,
+            )
+        except BaseException:
+            raw.close()
+            raise
+        mine, theirs = socket.socketpair()
+        threading.Thread(
+            target=_pump,
+            args=(raw, tls, inbound, outbound, theirs),
+            name="rendezvous-tls",
+            daemon=True,
+        ).start()
+        return mine
+
+
+def _handshake(
+    raw: socket.socket,
+    tls: ssl.SSLObject,
+    bios: tuple[ssl.MemoryBIO, ssl.MemoryBIO],
+    *,
+    pinned: bytes | None,
+    timeout: float,
+) -> None:
+    """Shakes hands over a connection, checking what the other end presented where asked.
+
+    Raises:
+      OSError: If it fails or does not finish within `timeout`, or the other end presented a
+        certificate other than `pinned`.
+    """
+    inbound, outbound = bios
+    ends = time.monotonic() + timeout
+    while not _shaken(tls):
+        raw.settimeout(max(0.01, ends - time.monotonic()))
+        raw.sendall(outbound.read())
+        heard = raw.recv(_RELAY)
+        if not heard:
+            raise ConnectionError("the other end left during the TLS handshake")
+        inbound.write(heard)
+    raw.settimeout(max(0.01, ends - time.monotonic()))
+    raw.sendall(outbound.read())
+    if pinned is not None and tls.getpeercert(binary_form=True) != pinned:
+        raise ConnectionError(
+            "the other end presented a certificate other than this meeting's"
+        )
+    raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+
+def _shaken(tls: ssl.SSLObject) -> bool:
+    """Takes a handshake as far as what has arrived allows, and says whether it is done."""
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        return False
+    return True
+
+
+@functools.cache
+def _sealing(at: str) -> _Sealing:
+    """The TLS of the meetings whose directory is `at`, read once per process.
+
+    Args:
+      at: The directory holding the :data:`CERTIFICATE` -- and, where this machine serves it,
+        the key.
+
+    Returns:
+      What the meetings are sealed with.
+
+    Raises:
+      OSError: If the certificate cannot be read, or the key is there and cannot be.
+      ValueError: If the certificate is not one.
+    """
+    certificate = Path(at) / CERTIFICATE
+    pinned = ssl.PEM_cert_to_DER_cert(certificate.read_text(encoding="ascii"))
+    client = _context(server=False)
+    # Pinned rather than verified, and so neither named nor chained: see `_Sealing`.
+    client.check_hostname = False
+    client.verify_mode = ssl.CERT_NONE
+    server = None
+    if (Path(at) / _KEY).exists():
+        server = _context(server=True)
+        # Nothing is resumed: every connection is a handshake of its own.
+        server.num_tickets = 0
+        server.load_cert_chain(certificate, Path(at) / _KEY)
+    return _Sealing(pinned, client, server)
+
+
+def _context(*, server: bool) -> ssl.SSLContext:
+    """A context of TLS 1.3 at least, which every Python this runs on has."""
+    context = ssl.SSLContext(
+        ssl.PROTOCOL_TLS_SERVER if server else ssl.PROTOCOL_TLS_CLIENT
+    )
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    return context
+
+
+def _pump(
+    raw: socket.socket,
+    tls: ssl.SSLObject,
+    inbound: ssl.MemoryBIO,
+    outbound: ssl.MemoryBIO,
+    plain: socket.socket,
+) -> None:
+    """Carries one sealed connection's plaintext to and from the socket handed on for it.
+
+    One thread for both directions, and that is the point of it. OpenSSL's state for one
+    connection is not to be read in one thread while another writes it, and everything that
+    uses a socket here does exactly that -- a session reading in one thread while commands are
+    sent in others, a relay pouring each way in a thread apiece. So nothing but this thread
+    touches the TLS, and what they all use is a socket of this machine's own.
+
+    The ends are kept as a socket keeps them. The other end's close_notify -- or its going
+    away -- is the end of what it sends, and the plain socket is shut for writing once the last
+    of that has been handed over, while whatever is still written to it is still sealed and
+    sent. The plain socket's own end is this one's: everything written before it is sealed
+    and sent, followed by a close_notify, and the connection is let go (:func:`_letting_go`).
+    A connection that fails -- a record that does not decrypt, which is somebody tampering --
+    is dropped at once, and the plain socket with it.
+    """
+    raw.settimeout(0.0)
+    plain.settimeout(0.0)
+    sending = bytearray()  # sealed, for the wire
+    handing = bytearray()  # opened, for the plain socket
+    heard = drained = shut = False
+    try:
+        while True:
+            while not heard and len(handing) < _RELAY:
+                try:
+                    opened = tls.read(_RELAY)
+                except ssl.SSLWantReadError:
+                    break
+                except (ssl.SSLZeroReturnError, ssl.SSLEOFError):
+                    opened = b""
+                handing += opened
+                heard = not opened
+            # Stopped for want of room rather than of records: what TLS still holds has
+            # arrived already, and no socket will say so again.
+            full = not heard and len(handing) >= _RELAY
+            sending += outbound.read()
+            if handing:
+                del handing[: _sent(plain, handing)]
+            if heard and not handing and not shut:
+                plain.shutdown(socket.SHUT_WR)
+                shut = True
+            if sending:
+                del sending[: _sent(raw, sending)]
+            if full and len(handing) < _RELAY:
+                continue
+            reading = not (heard or drained) and len(handing) < _RELAY
+            ready = _polled(
+                (raw, (select.POLLIN if reading else 0) | _out(sending)),
+                (
+                    plain,
+                    (select.POLLIN if len(sending) < _RELAY else 0) | _out(handing),
+                ),
+            )
+            if reading and raw.fileno() in ready:
+                more = _received(raw)
+                if more:
+                    inbound.write(more)
+                elif more is not None:
+                    inbound.write_eof()
+                    drained = True
+            if len(sending) < _RELAY and plain.fileno() in ready:
+                more = _received(plain)
+                if more == b"":
+                    break
+                if more:
+                    tls.write(more)
+        _letting_go(raw, tls, outbound, sending)
+    except OSError as exc:
+        log.debug("a sealed connection was dropped: %s", exc)
+    finally:
+        plain.close()
+        raw.close()
+
+
+def _letting_go(
+    raw: socket.socket, tls: ssl.SSLObject, outbound: ssl.MemoryBIO, sending: bytearray
+) -> None:
+    """Sends the last of a sealed connection and its close_notify, and lets it go.
+
+    The close_notify is all that is meant by asking for TLS's shutdown here, which in OpenSSL
+    goes on to wait for the other end's -- and gives up on the connection if the other end's
+    data arrives first. Nothing more is read from it either way, so its answer is not waited
+    for; but what arrives is read and dropped for a moment after this end has finished,
+    rather than left unread for the kernel to answer with a reset that could cost the other
+    end the last of what it was sent.
+    """
+    with contextlib.suppress(ssl.SSLError):
+        tls.unwrap()
+    sending += outbound.read()
+    ends = time.monotonic() + _ANSWERING
+    while sending and time.monotonic() < ends:
+        if _polled((raw, select.POLLOUT), timeout=ends - time.monotonic()):
+            del sending[: _sent(raw, sending)]
+    raw.shutdown(socket.SHUT_WR)
+    ends = time.monotonic() + GREETING
+    while _polled((raw, select.POLLIN), timeout=ends - time.monotonic()):
+        if not _received(raw):
+            return
+
+
+def _out(waiting: bytearray) -> int:
+    """Whether a socket is waited on for room to write: when there is something to write."""
+    return select.POLLOUT if waiting else 0
+
+
+def _polled(
+    *socks: tuple[socket.socket, int], timeout: float | None = None
+) -> set[int]:
+    """Waits for any of these sockets to be ready for what each is asked for, or for an end.
+
+    A socket asked for nothing is not waited on at all -- not even for its end, which `poll`
+    reports whether it was asked or not and which would otherwise wake this again and again.
+
+    Returns:
+      The descriptors of those that are ready, or that ended; none if `timeout` passed.
+    """
+    poller = select.poll()
+    for sock, events in socks:
+        if events:
+            poller.register(sock, events)
+    waiting = None if timeout is None else max(0, int(timeout * 1000))
+    return {fd for fd, _ in poller.poll(waiting)}
+
+
+def _sent(sock: socket.socket, data: bytearray) -> int:
+    """How much of `data` a socket that does not block took."""
+    try:
+        return sock.send(data)
+    except BlockingIOError:
+        return 0
+
+
+def _received(sock: socket.socket) -> bytes | None:
+    """What a socket that does not block had; `b""` at its end, None for nothing yet."""
+    try:
+        return sock.recv(_RELAY)
+    except BlockingIOError:
+        return None
 
 
 # ------------------------------------------------------------------- the broker's own wire

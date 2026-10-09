@@ -187,15 +187,17 @@ def _serve(argv: list[str]) -> int:
     )
     where.add_argument(
         "--peer",
-        metavar="TICKET@HOST:PORT",
+        metavar="TICKET@HOST:PORT[?tls=DIR]",
         help="serve one session through the rendezvous server using this ticket "
-        "when this machine cannot be reached directly",
+        "when this machine cannot be reached directly; over TLS pinned to DIR/cert.pem "
+        "where a DIR is given",
     )
     where.add_argument(
         "--peer-file",
         metavar="FILE",
         help="serve one session after another through the rendezvous server, each met "
-        "with the TICKET@HOST:PORT this file holds, such as a docker secret, until stopped",
+        "with the TICKET@HOST:PORT[?tls=DIR] this file holds, such as a docker secret, "
+        "until stopped",
     )
     parser.add_argument(
         "--token",
@@ -295,7 +297,7 @@ def _standing(path: str, table: ExportTable, token: str | None) -> int:
     here may read -- is not a way to be met in its place.
 
     Args:
-      path: The file holding the meeting, as `TICKET@HOST:PORT`.
+      path: The file holding the meeting, as `TICKET@HOST:PORT[?tls=DIR]`.
       table: The most a session may name.
       token: The shared secret a session must present, or None for none.
 

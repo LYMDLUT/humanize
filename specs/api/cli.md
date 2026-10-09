@@ -834,7 +834,7 @@ harnesses.
 ```text
 hmz internal anchor [<options>] <program> [<args>...]
 hmz internal anchor serve --export <virtual>[:<real>]... (--stdio | --listen [<host>:]<port>
-                          | --peer <ticket>@<host>:<port>) [--token <secret>]
+                          | --peer <ticket>@<host>:<port>[?tls=<dir>]) [--token <secret>]
                           [--log-level <level>]
 hmz internal anchor rendezvous [--listen [<host>:]<port>] [--punching <seconds>]
                                [--log-level <level>]

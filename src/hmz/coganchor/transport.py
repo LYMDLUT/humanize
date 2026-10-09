@@ -537,6 +537,7 @@ class Target:
         docker one, what each `docker exec` is told besides the container, as
         :data:`_DOCKER_OPTIONS` says, in the same pairs and spelled the same way, after a `?`
         ahead of the `@` of its endpoint.
+        For a `peer://` target, `("tls", DIR)` for a sealed meeting (:attr:`Meeting.tls`).
     """
 
     scheme: str
@@ -598,7 +599,13 @@ class Target:
             from hmz.coganchor.rendezvous import Meeting
 
             met = Meeting.parse(spec[len("peer://") :])
-            return cls("peer", host=met.host, port=met.port, path=met.ticket)
+            return cls(
+                "peer",
+                host=met.host,
+                port=met.port,
+                path=met.ticket,
+                options=(("tls", met.tls),) if met.tls else (),
+            )
         raise ValueError(
             f"unsupported target {spec!r}; expected ssh://HOST, "
             f"docker://CONTAINER[@ENDPOINT], {APPLE}://CONTAINER, "
@@ -633,7 +640,7 @@ class Target:
         if self.scheme == "tcp":
             return f"tcp://{self.host}:{self.port}"
         if self.scheme == "peer":
-            return f"peer://{self.path}@{self.host}:{self.port}"
+            return f"peer://{self.meeting}"
         return f"local{':' + self.path if self.path else ''}"
 
     @property
@@ -647,7 +654,9 @@ class Target:
             raise ValueError(f"{self.describe()} is not a meeting")
         from hmz.coganchor.rendezvous import Meeting
 
-        return Meeting(self.path, self.host, self.port)
+        return Meeting(
+            self.path, self.host, self.port, dict(self.options).get("tls", "")
+        )
 
     @property
     def endpoint(self) -> Endpoint:
