@@ -1353,7 +1353,8 @@ def connect(target: Target, exports: list[str], token: str | None = None) -> Tra
 
     Args:
       target: Where it is, or how to be introduced to it.
-      exports: The directories a session may name, for a serving half this starts.
+      exports: The directories a session may name, for a serving half this starts -- or,
+        at a `peer://` meeting, asks of the one met there.
       token: The secret a listening target asks for.
 
     Returns:
@@ -1374,7 +1375,9 @@ def connect(target: Target, exports: list[str], token: str | None = None) -> Tra
     if target.scheme == "peer":
         from hmz.coganchor import rendezvous
 
-        met = rendezvous.dial(target.meeting, rendezvous.ANCHOR)
+        # Asked at the meeting, as a serving half started here is asked on its command line:
+        # one left standing there serves this session these alone.
+        met = rendezvous.dial(target.meeting, rendezvous.ANCHOR, asks=exports)
         return Transport(Channel.from_socket(met))
     return _spawn(serve_line(target, exports), token)
 

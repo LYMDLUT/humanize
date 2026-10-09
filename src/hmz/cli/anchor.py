@@ -288,9 +288,15 @@ def _standing(path: str, table: ExportTable, token: str | None) -> int:
     a thread of its own while the next one is waited for; and a meeting that could not be had
     -- nobody came, or the broker is not there yet -- is simply gone back to.
 
+    Each session is served what its anchor asked for at the meeting, within `table`, as a
+    serving half that anchor started would have been: the directories its files are bounded
+    by and its fenced commands held to. And this half proves itself at every meeting by a key
+    it made up as it started and keeps to itself, so that the ticket -- which anything running
+    here may read -- is not a way to be met in its place.
+
     Args:
       path: The file holding the meeting, as `TICKET@HOST:PORT`.
-      table: The directories a session may name.
+      table: The most a session may name.
       token: The shared secret a session must present, or None for none.
 
     Returns:
@@ -298,12 +304,13 @@ def _standing(path: str, table: ExportTable, token: str | None) -> int:
     """
     import contextlib
     import logging
+    import secrets
     import threading
     import time
     from pathlib import Path
 
     from hmz.coganchor.proto import Channel
-    from hmz.coganchor.rendezvous import SERVE, Meeting, dial
+    from hmz.coganchor.rendezvous import SERVE, Meeting, meet
     from hmz.coganchor.serve.server import Server
 
     try:
@@ -311,15 +318,23 @@ def _standing(path: str, table: ExportTable, token: str | None) -> int:
     except (OSError, ValueError) as exc:
         print(f"hmz: {exc}", file=sys.stderr)
         return 1
+    key = secrets.token_hex(16)
+    log = logging.getLogger(__name__)
     with contextlib.suppress(KeyboardInterrupt):
         while True:
             try:
-                met = dial(meeting, SERVE)
+                met, asked = meet(meeting, SERVE, key=key)
             except OSError as exc:
-                logging.getLogger(__name__).debug("no session met: %s", exc)
+                log.debug("no session met: %s", exc)
                 time.sleep(_AGAIN)
                 continue
-            served = Server(Channel.from_socket(met), table, token)
+            try:
+                within = table.within(list(asked))
+            except (OSError, ValueError) as exc:
+                log.warning("refused a session asking for %s: %s", asked, exc)
+                met.close()
+                continue
+            served = Server(Channel.from_socket(met), within, token)
             threading.Thread(target=served.serve, daemon=True).start()
     return 0
 

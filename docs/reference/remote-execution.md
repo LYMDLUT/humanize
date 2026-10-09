@@ -755,7 +755,21 @@ machine, humanize books a meeting:
 - Neither half is told whether it was relayed.
 - A ticket may be met at again: a meeting takes no more halves once it has both, and a half
   arriving where one of its own role is already waiting under the ticket waits behind it,
-  first come first met. This is what lets one serving half left standing serve every session.
+  first come first met, up to 64 waiting (`this ticket already has 64 meetings waiting`).
+  This is what lets one serving half left standing serve every session.
+- A meeting may be booked with the broker instead, for a serving half left standing where
+  anything that runs may read its ticket (a [swarm task dialling back](/reference/machines#swarm-environments)).
+  It has two tickets: the serving half's lets in only a serving half, and of those only the
+  one that first came with it, which proves itself at every meeting after by a key it chose
+  (`hmz internal anchor serve --peer-file`); the anchoring halves come with the other. Each
+  anchoring half says the directories it asks to be served, which the broker passes to its
+  serving half, and the two prove to each other on a punched socket a value the broker hands
+  both rather than the ticket. A half let into no meeting is told
+  `no meeting here lets that half in`; cancelling the booking turns both tickets away. A
+  broker holding booked meetings turns away every other ticket, and an address with 64
+  halves connected that have not yet said a ticket it lets in, other than its own address.
+- The protocol is not encrypted: tickets, and every relayed session, cross the network in the
+  clear. A broker belongs on a network whose other machines are trusted with that.
 - `hmz internal anchor rendezvous [--listen [HOST:]PORT] [--punching SECONDS]` runs a broker on
   its own (default `0.0.0.0:0`) and prints `hmz internal anchor rendezvous listening HOST PORT`
   on stderr.
@@ -820,7 +834,7 @@ hmz internal anchor serve --export VIRTUAL[:REAL] [--export ...]
 | `--stdio` | one session on stdin/stdout; fds 0 and 1 are pointed at `/dev/null` for the rest of the process | humanize, for `local`, `ssh://`, `docker://`, `apple-container://` and `slurm://` targets |
 | `--listen [HOST:]PORT` | every TCP connection, one thread each, until interrupted; prints `hmz internal anchor serve listening HOST PORT` on stderr | a person, for `tcp://` targets; or the batch step of a Slurm job whose runtime says `via: tcp`, on `0.0.0.0:0` with a random secret set in its script |
 | `--peer TICKET@HOST:PORT` | one session met at a broker | humanize, for a harness on a third machine |
-| `--peer-file FILE` | one session after another met at a broker, each in a thread of its own, with the meeting in `FILE`; a meeting it could not have is gone back to after 1 s | a swarm task [dialling back](/reference/machines#swarm-environments), as its own command |
+| `--peer-file FILE` | one session after another met at a broker, each in a thread of its own, with the meeting in `FILE`, proving itself by a key it makes up as it starts; each session is served only the directories its anchoring half asked for, resolved through the `--export`s (all of them where it asked for none; none, and the session closed, where one is outside them); a meeting it could not have is gone back to after 1 s | a swarm task [dialling back](/reference/machines#swarm-environments), as its own command |
 
 - `--export VIRTUAL[:REAL]` is required and repeatable. `VIRTUAL` must be absolute; `REAL`
   defaults to `VIRTUAL`, with `~` expanded. A path outside every export is refused with

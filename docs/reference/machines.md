@@ -571,7 +571,7 @@ harness, files, derived environments -- is as for a [docker environment](#docker
 | Arguments | the runtime's `run_args`; for the task of a harness a harness setting puts on the swarm, `--cap-add SYS_PTRACE` (Engine 20.10 or newer). Services take no OCI `--runtime` |
 | Labels | on the service: those of a docker environment's container |
 | Reached | `docker exec` against: the daemon the runtime's `nodes` names for the node's host, else the manager's own where the task landed on the manager, else `ssh://<the node's address>` (docker's ssh transport, as this machine's `ssh` resolves it) |
-| Reached, dialling back | with the runtime's `dial_back` set: no `docker exec`. The task's command is the serving half, `hmz internal anchor serve --peer-file /run/secrets/humanize-peer --export /`, run from the archive mounted at `/humanize-<digest>.pyz` from the docker config `humanize-<digest>` (created once, shared by every task of that archive, and left on the swarm). Its meeting, `TICKET@<dial_back>:<port>`, is the docker secret `<service>-peer`, removed with the service; this process's broker listens on `0.0.0.0`, port `$HUMANIZE_RENDEZVOUS_PORT` (default any). Every session is met there at `peer://TICKET@<dial_back>:<port>`, the harness here |
+| Reached, dialling back | with the runtime's `dial_back` set: no `docker exec`. The task's command is the serving half, `hmz internal anchor serve --peer-file /run/secrets/humanize-peer --export /`, run from the archive mounted at `/<service>-hmz.pyz` from the docker config `<service>-hmz`. Its meeting is [booked](/reference/remote-execution#being-introduced): the docker secret `<service>-peer` holds the serving half's `TICKET@<dial_back>:<port>`, and every session is met at `peer://<anchoring ticket>@<dial_back>:<port>`, the harness here; each is served only the directories it asks for (its workspace; `/` for the environment's own commands). This process's broker for booked meetings listens on `dial_back` where that is one of this machine's addresses, else on `0.0.0.0`, port `$HUMANIZE_RENDEZVOUS_PORT` (default any). The secret and the config carry the service's labels, those `run_args` give it among them, and are removed with it, by this run or by the next one finding it [left](#swarm-environments); the meeting is cancelled with it |
 
 Allocation holds an exclusive `flock` on `$TMPDIR/humanize-<uid>/.swarm.<name>.lock` while
 what is free is worked out and the service is created, and not while its task is placed and
@@ -617,7 +617,7 @@ swarm@cluster: no node took it within 30s: no suitable node (insufficient resour
 | task failed, or not running within 600 s | `EnvUnavailable: swarm@<p>: the task of <service> is failed: …` |
 | the node's daemon not reachable | `EnvConnectionError: could not reach <p> over docker exec: …` |
 | dialling back, the manager refused the secret or the config | `EnvUnavailable: swarm@<p>: could not create a secret on <endpoint>: …` (or `a config`) |
-| dialling back, the task never came to its meeting (120 s) | `EnvConnectionError: swarm@<p>: the other half never arrived` |
+| dialling back, the task never came to its meeting (120 s) | `EnvConnectionError: could not reach <p> over docker exec: the other half never arrived` |
 
 These and the shortages above name a saved runtime `swarm@<p>`, and the swarm this machine
 manages `swarm` alone.

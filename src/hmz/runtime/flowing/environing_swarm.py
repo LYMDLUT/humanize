@@ -231,8 +231,6 @@ class SwarmMachine(SSHMachine):
         )
         self.image = image or IMAGE
         self.traced = traced
-        if stored is not None and stored.dial_back:
-            self.over = "a dial-back"
         self._swarm: Swarm | None = None
         self._share: Share | None = None
         self._starting: asyncio.Future[tuple[Swarm, Share]] | None = None
@@ -432,23 +430,28 @@ def _told(where: str) -> Generator[None]:
 
 
 def _removed(endpoint: Endpoint, service: str) -> None:
-    """Removes a service a run left behind, asking for so long at most.
+    """Removes a service a run left behind, and what a dial-back one was created with.
+
+    Asking for so long at most, each.
 
     Raises:
       OSError: If it could not be asked.
     """
     import subprocess
 
-    try:
-        subprocess.run(
-            endpoint.docker("service", "rm", service),
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=_ASKING,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise OSError(f"{service} was not removed within {_ASKING:g}s") from error
+    from hmz.coganchor.machines.swarm import kept
+
+    for kind, name in (("service", service), *kept(service)):
+        try:
+            subprocess.run(
+                endpoint.docker(kind, "rm", name),
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=_ASKING,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise OSError(f"{name} was not removed within {_ASKING:g}s") from error
 
 
 def _nodes(stored: SwarmRuntime | None) -> dict[str, str]:

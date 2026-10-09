@@ -714,7 +714,7 @@ hmz internal anchor serve --export VIRTUAL[:REAL] [--export …]
 | `--stdio` | | Serve one session over stdin/stdout. |
 | `--listen [HOST:]PORT` | host `127.0.0.1` | Serve TCP connections. |
 | `--peer TICKET@HOST:PORT` | | Serve one session through a rendezvous broker. |
-| `--peer-file FILE` | | Serve one session after another through a rendezvous broker, each met with the `TICKET@HOST:PORT` in `FILE` (a docker secret), until stopped. |
+| `--peer-file FILE` | | Serve one session after another through a rendezvous broker, each met with the `TICKET@HOST:PORT` in `FILE` (a docker secret), until stopped; each session is served only what it asked for of the `--export`s. |
 | `--token TOKEN` | `$HUMANIZE_TOKEN` | Shared secret required from clients. |
 | `--log-level` | `$HUMANIZE_LOG`, else `warning` | |
 

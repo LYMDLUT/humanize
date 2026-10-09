@@ -644,21 +644,22 @@ def test_the_serving_line_names_its_exports(
 
 
 def test_a_peer_target_is_met_at_its_broker(monkeypatch: pytest.MonkeyPatch) -> None:
-    met: list[tuple[Meeting, str]] = []
+    met: list[tuple[Meeting, str, Any]] = []
 
     class Sock:
         def makefile(self, mode: str) -> Any:
             return None
 
-    def dial(meeting: Meeting, role: str) -> Sock:
-        met.append((meeting, role))
+    def dial(meeting: Meeting, role: str, *, asks: Any = ()) -> Sock:
+        met.append((meeting, role, asks))
         return Sock()
 
     monkeypatch.setattr(rendezvous, "dial", dial)
-    link = transport.connect(Target.parse("peer://t@b:7"), [])
+    link = transport.connect(Target.parse("peer://t@b:7"), ["/w:/real"])
     assert isinstance(link.channel, Channel)
     assert link.process is None
-    assert met == [(Meeting("t", "b", 7), rendezvous.ANCHOR)]
+    # What a serving half started here would have been told to export, it is asked for there.
+    assert met == [(Meeting("t", "b", 7), rendezvous.ANCHOR, ["/w:/real"])]
 
 
 class Child:

@@ -191,6 +191,7 @@ def serving(monkeypatch: pytest.MonkeyPatch, logs: mock.Mock) -> mock.Mock:
         hmz.coganchor.serve.listener, "serve_forever", held.serve_forever
     )
     monkeypatch.setattr(hmz.coganchor.rendezvous, "dial", held.dial)
+    monkeypatch.setattr(hmz.coganchor.rendezvous, "meet", held.meet)
     monkeypatch.setattr(hmz.coganchor.rendezvous.Meeting, "parse", held.meeting)
     monkeypatch.delenv("HUMANIZE_TOKEN", raising=False)
     del logs
@@ -306,23 +307,45 @@ def test_serve_standing_serves_each_session_it_is_met_for_until_stopped(
 ) -> None:
     peer = tmp_path / "peer"
     peer.write_text("t@h:1\n")
-    serving.dial.side_effect = [
-        mock.Mock(),
+    sessions = [mock.Mock(), mock.Mock(), mock.Mock()]
+    serving.meet.side_effect = [
+        (sessions[0], ()),
         OSError("nobody came"),
-        mock.Mock(),
+        (sessions[1], ("/w",)),
+        (sessions[2], ("/elsewhere",)),
         KeyboardInterrupt,
     ]
+    table = serving.parse.return_value = mock.Mock()
+
+    def within(asked: list[str]) -> object:
+        if asked == ["/elsewhere"]:
+            raise PermissionError(13, "path is outside every export")
+        return "just /w" if asked == ["/w"] else table
+
+    table.within.side_effect = within
     monkeypatch.setattr(time, "sleep", serving.sleep)
     monkeypatch.setattr(threading, "Thread", serving.Thread)
 
     assert anchor(["serve", "--export", "/", "--peer-file", str(peer)]) == 0
 
     serving.meeting.assert_called_once_with("t@h:1")
-    assert serving.dial.call_args_list == 4 * [
-        mock.call(serving.meeting.return_value, hmz.coganchor.rendezvous.SERVE)
+    # One key, made up here, at every meeting: what proves this half is the one standing.
+    keys = {call.kwargs["key"] for call in serving.meet.call_args_list}
+    assert len(keys) == 1
+    assert len(keys.pop()) >= 32
+    assert serving.meet.call_args_list == 5 * [
+        mock.call(
+            serving.meeting.return_value, hmz.coganchor.rendezvous.SERVE, key=mock.ANY
+        )
     ]
     serving.sleep.assert_called_once()
-    assert serving.Server.call_count == 2
+    # Each session is served what it asked for: all of it where it asked for nothing, and
+    # none at all where what it asked for is not here to be had.
+    assert [call.args[1] for call in serving.Server.call_args_list] == [
+        table,
+        "just /w",
+    ]
+    sessions[2].close.assert_called_once_with()
     assert serving.Thread.call_args_list == 2 * [
         mock.call(target=serving.Server.return_value.serve, daemon=True)
     ]
@@ -334,7 +357,7 @@ def test_serve_standing_with_no_meeting_to_read_says_so(
 ) -> None:
     assert anchor(["serve", "--export", "/", "--peer-file", str(tmp_path / "no")]) == 1
     assert "No such file" in capsys.readouterr().err
-    serving.dial.assert_not_called()
+    serving.meet.assert_not_called()
 
 
 @pytest.fixture

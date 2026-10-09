@@ -36,6 +36,12 @@ own. A meeting stops taking halves once it has both, and a half arriving where o
 kind is already waiting waits behind it -- so two halves met under a ticket are never joined
 by a third, and two arriving at once are each met in turn.
 
+Such a meeting is booked with the broker rather than merely named (:meth:`Broker.stand`), and
+has a ticket for each half. The serving half's is handed to a machine where anything that
+runs may read it, so it lets in a serving half alone, and only the one that came with it
+first -- by a key that half chose and never wrote down; the anchoring halves are given the
+other. Holding the ticket a task was handed is then neither being that task nor reaching it.
+
 Which of the three a session got is not a thing the session is told. The channel is a socket
 either way, the protocol above it is the same protocol, and a flow that would have to behave
 differently for a relayed session is a flow that would have to know something no end of a
@@ -50,7 +56,9 @@ has for every other unreachable pair.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -60,7 +68,10 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 __all__ = [
     "ANCHOR",
@@ -68,7 +79,9 @@ __all__ = [
     "Broker",
     "Meeting",
     "dial",
+    "meet",
     "shared",
+    "standing",
     "ticket",
 ]
 
@@ -124,6 +137,21 @@ _TRIES = 8
 #: once was refusing them here, at a cap chosen for the size of a dictionary rather than for
 #: the size of a fleet, and the sessions it refused were sessions that would have worked.
 _TICKETS = 1 << 16
+
+#: How many meetings one ticket may have waiting at once. A ticket met at again has one
+#: serving half, which goes back the moment it is met, so what waits is the sessions arriving
+#: in that moment: a handful. Past this many is not a burst but something knocking.
+_QUEUED = 64
+
+#: How many halves one address may have connected to a broker of booked meetings before
+#: saying which meeting they are for. The halves this machine itself sends are not counted --
+#: a run starting its agents all at once is one address -- and nor is a half once it is let
+#: in, so this costs nobody with a ticket anything, and anybody without one most of a thread.
+_KNOCKING = 64
+
+#: The most directories an anchoring half may ask its serving half for, and how long a name.
+_ASKS = 64
+_ASKED = 4096
 
 #: How many pairs of machines a broker remembers having failed to introduce, and how often it
 #: tries them again anyway. Two machines with no route between them do not grow one between
@@ -209,7 +237,13 @@ class Meeting:
         return f"{self.ticket}@{self.host}:{self.port}"
 
 
-def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.socket:
+def dial(
+    meeting: Meeting,
+    role: str,
+    *,
+    timeout: float = PAIRING,
+    asks: Sequence[str] = (),
+) -> socket.socket:
     """Meets the other half of a session and answers with the socket joining the two.
 
     The same call on both machines, differing only in which half is calling it. It returns
@@ -221,6 +255,9 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
       meeting: Which broker, and under what ticket.
       role: :data:`ANCHOR` or :data:`SERVE`, whichever half this is.
       timeout: How long to wait at the broker for the other half to arrive.
+      asks: For an anchoring half, the directories it asks to be served, as `VIRTUAL[:REAL]`
+        -- the `--export`s a serving half it started would have been started with. A
+        serving half left standing serves each session only those (see :func:`meet`).
 
     Returns:
       The socket carrying the session. Blocking, with no timeout set, ready for
@@ -230,6 +267,39 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
       ValueError: If `role` is not one of the two.
       OSError: If the broker cannot be reached, the other half never arrives, or the two
         could be neither introduced nor carried.
+    """
+    return meet(meeting, role, timeout=timeout, asks=asks)[0]
+
+
+def meet(
+    meeting: Meeting,
+    role: str,
+    *,
+    timeout: float = PAIRING,
+    key: str = "",
+    asks: Sequence[str] = (),
+) -> tuple[socket.socket, tuple[str, ...]]:
+    """:func:`dial`, answering besides with what the other half asked of this one.
+
+    What a serving half left standing at a booked meeting dials with: it proves with `key`
+    that it is the half that first came with its ticket, and is told what each anchoring half
+    met there asked to be served.
+
+    Args:
+      meeting: Which broker, and under what ticket.
+      role: :data:`ANCHOR` or :data:`SERVE`, whichever half this is.
+      timeout: How long to wait at the broker for the other half to arrive.
+      key: For a serving half at a booked meeting, the secret it chose, the same every time.
+      asks: For an anchoring half, the directories it asks to be served, as :func:`dial`.
+
+    Returns:
+      The socket carrying the session, as :func:`dial` answers it, and the directories the
+      anchoring half asked for -- empty where it asked for none, and for an anchoring half.
+
+    Raises:
+      ValueError: If `role` is not one of the two.
+      OSError: If the broker cannot be reached or will not let this half in, the other half
+        never arrives, or the two could be neither introduced nor carried.
     """
     if role not in ROLES:
         raise ValueError(f"unsupported role {role!r}; expected {ANCHOR} or {SERVE}")
@@ -242,9 +312,23 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
         home.settimeout(timeout)
         home.connect((meeting.host, meeting.port))
         lines = _Lines(home)
-        _say(home, {"ticket": meeting.ticket, "role": role, "at": _mine(home, port)})
-        seen = lines.read(timeout).get("seen")
-        log.debug("the broker sees this half at %s", seen)
+        hello: dict[str, Any] = {
+            "ticket": meeting.ticket,
+            "role": role,
+            "at": _mine(home, port),
+        }
+        if key:
+            hello["key"] = key
+        if asks:
+            hello["export"] = list(asks)
+        _say(home, hello)
+        first = lines.read(timeout)
+        if "seen" not in first:
+            # Turned away at the door: the broker says why, and that is the answer.
+            raise ConnectionError(  # noqa: TRY301 -- for the reason the ones below are
+                str(first.get("why") or "the broker would not let this half in")
+            )
+        log.debug("the broker sees this half at %s", first["seen"])
         # A little longer than the broker is patient for, deliberately: the two are given the
         # same number, and a half that gave up on the same tick would answer with a bare
         # timeout instead of the broker's own account of what it had been waiting for.
@@ -256,8 +340,16 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
             raise ConnectionError(  # noqa: TRY301
                 str(said.get("why") or "the other half never arrived")
             )
+        asked = _asked(said.get("export")) if role == SERVE else ()
+        if asked is None:
+            raise ConnectionError(  # noqa: TRY301 -- for the reason the one above is
+                "the broker passed on something that is not a list of directories"
+            )
+        # What the two prove to each other on a punched socket: the ticket, unless the broker
+        # says otherwise -- which it does for a booked meeting, whose halves hold two.
+        proof = str(said.get("proof") or meeting.ticket)
         punched = _punch(
-            ear, port, said["peer"], meeting.ticket, role, float(said.get("punch", 0.0))
+            ear, port, said["peer"], proof, role, float(said.get("punch", 0.0))
         )
         _say(home, {"direct": punched is not None})
         # The broker's word rather than this half's: one end can have a socket the other end
@@ -267,7 +359,7 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
         if agreed == "direct" and punched is not None:
             log.debug("joined %s directly", meeting.ticket[:8])
             home.close()
-            return _settled(punched)
+            return _settled(punched), asked
         if agreed != "relay":
             raise ConnectionError(  # noqa: TRY301 -- for the reason the one above is
                 f"the broker will not join this session: {agreed}"
@@ -281,7 +373,7 @@ def dial(meeting: Meeting, role: str, *, timeout: float = PAIRING) -> socket.soc
         # The `except` below is a cleanup of the three sockets this call may be holding, and
         # an `else` after it would put the answer further from the road that reached it than
         # the two the branches above already are.
-        return held  # noqa: TRY300
+        return held, asked  # noqa: TRY300
     except BaseException:
         for spare in (home, ear, punched):
             if spare is not None:
@@ -310,6 +402,7 @@ class Broker:
         *,
         patience: float = PAIRING,
         punching: float = PUNCHING,
+        booked: bool = False,
     ) -> None:
         """Prepares a broker, without listening yet.
 
@@ -319,14 +412,25 @@ class Broker:
           port: The port, or 0 to be given one.
           patience: How long one half waits here for the other.
           punching: How long the two are given to reach each other before being carried.
+          booked: Whether it introduces only the halves of meetings booked with it
+            (:meth:`stand`), turning away every other ticket -- and counting what each
+            address has connected without saying one (:data:`_KNOCKING`).
         """
         self._host = host
         self._port = port
         self._patience = patience
         self._punching = punching
+        self._booked = booked
         self._lock = threading.Lock()
         #: The meetings still waiting for a half, by ticket, oldest first.
         self._meetings: dict[str, list[_Pair]] = {}
+        #: The booked meetings, by their serving half's ticket, each with the key that half
+        #: proved itself with the first time -- "" until it has come.
+        self._serving: dict[str, str] = {}
+        #: The same meetings by their anchoring halves' ticket.
+        self._anchoring: dict[str, str] = {}
+        #: How many halves each address has connected that have not yet been let in.
+        self._knocking: dict[str, int] = {}
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
@@ -387,6 +491,31 @@ class Broker:
         self._thread.start()
         return self.address
 
+    def stand(self) -> tuple[str, str]:
+        """Books a meeting a serving half is left standing at, met again and again.
+
+        Returns:
+          Two tickets for it: the serving half's, which lets in that half alone -- the one
+          that comes with it first, proving itself each time after by the key it came with --
+          and the one every anchoring half meeting it is given.
+        """
+        serving, anchoring = ticket(), ticket()
+        with self._lock:
+            self._serving[serving] = ""
+            self._anchoring[anchoring] = serving
+        return serving, anchoring
+
+    def withdraw(self, serving: str) -> None:
+        """Cancels a booked meeting: neither of its tickets lets anybody in from now on.
+
+        Args:
+          serving: The serving half's ticket, as :meth:`stand` answered it.
+        """
+        with self._lock:
+            self._serving.pop(serving, None)
+            for anchoring in [k for k, v in self._anchoring.items() if v == serving]:
+                del self._anchoring[anchoring]
+
     def close(self) -> None:
         """Stops listening. Sessions already introduced are not in this object's path."""
         self._closed.set()
@@ -422,26 +551,32 @@ class Broker:
         lines = _Lines(half)
         pair: _Pair | None = None
         role = ""
+        knocking = self._knock(whence[0])
         try:
+            if knocking is None:
+                return
             hello = lines.read(_ANSWERING)
             name, role = str(hello.get("ticket", "")), str(hello.get("role", ""))
-            if not name or role not in ROLES:
+            asks = _asked(hello.get("export")) if role == ANCHOR else ()
+            if not name or role not in ROLES or asks is None:
                 _say(half, {"go": "no", "why": "say a ticket and a role"})
                 return
+            let_in = self._admitted(name, role, str(hello.get("key") or ""))
+            if let_in is None:
+                _say(half, {"go": "no", "why": "no meeting here lets that half in"})
+                return
+            name, booked = let_in
+            self._unknock(knocking)
+            knocking = None
             # Its own address as the world has it, which is the one fact about a machine
             # behind a NAT that only somebody outside it can supply.
             _say(half, {"seen": [whence[0], whence[1]]})
             mine = [*_pairs(hello.get("at")), (whence[0], whence[1])]
-            pair = self._join(name, role, half, mine)
-            if pair is None:
-                _say(
-                    half,
-                    {
-                        "go": "no",
-                        "why": f"this rendezvous is already holding {_TICKETS} meetings",
-                    },
-                )
+            joined_at = self._join(name, role, half, mine, asks)
+            if isinstance(joined_at, str):
+                _say(half, {"go": "no", "why": joined_at})
                 return
+            pair = joined_at
             other = pair.await_other(role, self._patience)
             if other is None and not self._withdrawn(pair):
                 # Met in the instant it gave up: whoever took it off the queue has arrived.
@@ -451,7 +586,13 @@ class Broker:
                 return
             between = pair.between()
             punching = self._punching if self._worth(between) else 0.0
-            _say(half, {"peer": other, "punch": punching})
+            said: dict[str, Any] = {"peer": other, "punch": punching}
+            if booked:
+                # Its two halves hold two tickets, so neither can prove the other's.
+                said["proof"] = pair.proof
+            if role == SERVE and pair.asks:
+                said["export"] = list(pair.asks)
+            _say(half, said)
             direct = bool(lines.read(punching + _ANSWERING).get("direct"))
             joined = pair.settle(role, direct=direct, patience=_ANSWERING)
             if role == ANCHOR:
@@ -467,10 +608,70 @@ class Broker:
         except (OSError, ValueError) as exc:
             log.debug("a half of %s left: %s", role or "a meeting", exc)
         finally:
+            if knocking is not None:
+                self._unknock(knocking)
             if pair is not None:
                 self._forget(pair, role)
             with contextlib.suppress(OSError):
                 half.close()
+
+    def _knock(self, address: str) -> str | None:
+        """Counts a half connected from an address, until it is let in or goes.
+
+        Returns:
+          The address to stop counting it under, "" for one not counted -- every half of a
+          broker that books nothing, and those of this machine's own -- or None for a half
+          refused for there already being :data:`_KNOCKING` from there.
+        """
+        if not self._booked or address in (self._host, "127.0.0.1"):
+            return ""
+        with self._lock:
+            if self._knocking.get(address, 0) >= _KNOCKING:
+                return None
+            self._knocking[address] = self._knocking.get(address, 0) + 1
+        return address
+
+    def _unknock(self, address: str) -> None:
+        """Stops counting a half :meth:`_knock` counted."""
+        if not address:
+            return
+        with self._lock:
+            left = self._knocking.get(address, 0) - 1
+            if left > 0:
+                self._knocking[address] = left
+            else:
+                self._knocking.pop(address, None)
+
+    def _admitted(self, name: str, role: str, key: str) -> tuple[str, bool] | None:
+        """The meeting a half is let into, and whether it is a booked one.
+
+        A booked meeting is waited at under its serving half's ticket, which lets in a
+        serving half alone, and of those only the one that first came with it -- the key it
+        came with being what every later one is held to. Its anchoring halves come with the
+        other ticket and are let into the same meeting.
+
+        Args:
+          name: The ticket the half came with.
+          role: Which half it says it is.
+          key: What it proves itself with, "" for nothing.
+
+        Returns:
+          The meeting's name and whether it was booked, or None for a half let in nowhere.
+        """
+        with self._lock:
+            serving = self._anchoring.get(name)
+            if serving is not None:
+                return (serving, True) if role == ANCHOR else None
+            if name in self._serving:
+                if role != SERVE or not key:
+                    return None
+                held = self._serving[name]
+                if not held:
+                    self._serving[name] = key
+                elif not hmac.compare_digest(held.encode(), key.encode()):
+                    return None
+                return name, True
+        return None if self._booked else (name, False)
 
     def _worth(self, between: tuple[str, str] | None) -> bool:
         """Whether these two are worth trying to introduce, or have failed too lately.
@@ -502,13 +703,21 @@ class Broker:
                 self._failed[between] = self._failed.get(between, 0) + 1
 
     def _join(
-        self, name: str, role: str, half: socket.socket, mine: list[tuple[str, int]]
-    ) -> _Pair | None:
+        self,
+        name: str,
+        role: str,
+        half: socket.socket,
+        mine: list[tuple[str, int]],
+        asks: tuple[str, ...] = (),
+    ) -> _Pair | str:
         """Puts one half into the oldest meeting waiting for it, else into one of its own.
 
         A meeting given its second half is taken off the queue there and then, so the next
         half under the ticket starts the next meeting; and both are under the lock, so a half
         giving up can tell whether it was met as it did.
+
+        Returns:
+          The meeting, or why there is none to be had.
         """
         with self._lock:
             waiting = self._meetings.get(name, [])
@@ -517,10 +726,14 @@ class Broker:
                 if not waiting:
                     del self._meetings[name]
             elif not waiting and len(self._meetings) >= _TICKETS:
-                return None
+                return f"this rendezvous is already holding {_TICKETS} meetings"
+            elif len(waiting) >= _QUEUED:
+                return f"this ticket already has {_QUEUED} meetings waiting"
             else:
                 pair = _Pair(name)
                 self._meetings.setdefault(name, []).append(pair)
+            if role == ANCHOR:
+                pair.asks = asks
             pair.arrive(role, half, mine)
         return pair
 
@@ -555,6 +768,10 @@ class _Pair:
         default_factory=dict[str, list[tuple[str, int]]]
     )
     verdicts: dict[str, bool] = field(default_factory=dict[str, bool])
+    #: What the anchoring half asked to be served, which its serving half is told.
+    asks: tuple[str, ...] = ()
+    #: What the two prove to each other on a punched socket, where they hold two tickets.
+    proof: str = field(default_factory=lambda: secrets.token_hex(16))
     #: Where each half is as the broker saw it, which is how a pair of machines is named.
     seen: dict[str, str] = field(default_factory=dict[str, str])
     #: Set when the half of that name has said what it is and where it can be reached.
@@ -777,6 +994,46 @@ def _facing() -> str:
         asking.connect(("192.0.2.1", 9))  # reserved for documentation; never routed
         return str(asking.getsockname()[0])
     return "127.0.0.1"
+
+
+#: The brokers this process holds for booked meetings, by the address their halves dial.
+_standings: dict[str, Broker] = {}
+
+
+def standing(address: str) -> tuple[Broker, int]:
+    """The broker this process holds for the meetings it books, dialled at `address`.
+
+    Apart from :func:`shared`'s, and stricter: it introduces only the halves of meetings
+    booked with it (:meth:`Broker.stand`), and listens on that address alone where it is one
+    of this machine's -- not on every interface, for any ticket anybody brings. Where it is
+    not -- the address of a NAT in front of this machine, or a name only the other side
+    resolves -- on every interface, as :func:`shared`'s does.
+
+    Args:
+      address: Where the serving halves reach this machine.
+
+    Returns:
+      The broker, started on first use and kept for the rest of the run, and its port.
+
+    Raises:
+      OSError: If it cannot listen.
+    """
+    with _SHARING:
+        broker = _standings.get(address)
+        if broker is None:
+            port = int(os.environ.get("HUMANIZE_RENDEZVOUS_PORT", "0"))
+            broker = Broker(address, port, booked=True)
+            try:
+                broker.start()
+            except OSError as error:
+                if not isinstance(error, socket.gaierror) and (
+                    error.errno != errno.EADDRNOTAVAIL
+                ):
+                    raise
+                broker = Broker(port=port, booked=True)
+                broker.start()
+            _standings[address] = broker
+        return broker, broker.address[1]
 
 
 # ------------------------------------------------------------------------ punching a hole
@@ -1096,6 +1353,30 @@ def _pairs(said: Any) -> list[tuple[str, int]]:
             socket.inet_aton(host)
             found[host, pair[1]] = None
     return list(found)
+
+
+def _asked(said: Any) -> tuple[str, ...] | None:
+    """Reads the directories an anchoring half asked for off the wire.
+
+    One reader for both ends, as :func:`_pairs` is: the broker keeps what a half said and the
+    other half is passed it. Bounded, since it is held for as long as the meeting is waited
+    at.
+
+    Returns:
+      What was asked; empty where nothing was. None for something that is not a list of
+      directories, which is refused rather than read as having asked for nothing -- a
+      session that asked for nothing is served everything.
+    """
+    if said is None:
+        return ()
+    if not isinstance(said, list):
+        return None
+    asked = cast("list[Any]", said)
+    if len(asked) > _ASKS or not all(
+        isinstance(one, str) and 0 < len(one) <= _ASKED for one in asked
+    ):
+        return None
+    return tuple(cast("list[str]", asked))
 
 
 # ------------------------------------------------------------------- the broker's own wire

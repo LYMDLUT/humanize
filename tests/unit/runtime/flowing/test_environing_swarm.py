@@ -398,8 +398,41 @@ async def test_a_task_on_a_runtime_dialling_back_is_reached_at_its_meeting(
     placed = machine.placement(PurePosixPath("/srv/x")).machine
     assert isinstance(placed, AnchoredConfig)
     assert placed.anchor.target == machine.target
-    assert machine.over == "a dial-back"
     await driver.close()
+
+
+async def test_a_task_a_run_now_gone_left_goes_with_what_it_was_created_with(
+    manager: type[_Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    left = Held(
+        "humanize-c-gone",
+        cpus=2,
+        labels={"humanize": str(os.getuid()), HOST: socket.gethostname(), PID: "0"},
+    )
+    monkeypatch.setattr(coganchor_swarm, "services", returning([left]))
+    monkeypatch.setattr(os, "kill", _gone)
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    machine = SwarmMachine("c", PurePosixPath("/srv/x"), stored=runtime(Runtime("c")))
+    driver = MachineEnvDriver(machine, PurePosixPath("/work"))
+
+    await driver.probe()
+
+    assert [argv[-3:] for argv in ran] == [
+        ["service", "rm", "humanize-c-gone"],
+        ["secret", "rm", "humanize-c-gone-peer"],
+        ["config", "rm", "humanize-c-gone-hmz"],
+    ]
+    await driver.close()
+
+
+def _gone(pid: int, signal: int) -> None:
+    raise ProcessLookupError(pid, signal)
 
 
 async def test_a_task_no_node_took_is_a_resource_unmet(manager: type[_Config]) -> None:
