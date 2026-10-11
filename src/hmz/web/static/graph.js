@@ -106,7 +106,7 @@ export function graph({ open }) {
   function draw(model, focus, epic) {
     last = [model, focus, epic]
     // Drawn again only where what it is made of changed; the clocks on it move on their own.
-    const made = JSON.stringify([model.frames, model.agents.map(({ role, working, status, spec, sessions, turns, tokens, under }) => [role, working, status, spec, turns, tokens, under, sessions.map((one) => [one.key, one.working, one.turns.length, one.turns.map((turn) => turn.end === null)])]), model.handovers, model.latest, model.live, focus])
+    const made = JSON.stringify([model.frames, model.agents.map(({ role, working, status, spec, sessions, turns, tokens, under }) => [role, working, status, spec, turns, tokens, under, sessions.map((one) => [one.key, one.working, one.unread, one.turns.length, one.turns.map((turn) => turn.end === null)])]), model.handovers, model.latest, model.live, focus])
     if (made !== shape) {
       shape = made
       build(model, focus, epic)
@@ -213,7 +213,7 @@ export function graph({ open }) {
       return h(
         'a',
         { class: ['node-session', one.working && 'working'], href: `${base}/sessions/${encodeURIComponent(one.key)}`, title: one.about, 'data-hmz': 'graph-session' },
-        h('span', { class: 'session-key mono' }, one.working ? '●' : '○', ' ', one.key.split('/').pop()),
+        h('span', { class: 'session-key mono' }, one.working ? '●' : '○', ' ', one.key.split('/').pop(), one.unread ? h('i', { class: 'unread', title: 'Unread' }) : null),
         track,
         h('span', { class: 'sr-only' }, `${one.key}: ${one.turns.length} turns${one.working ? ', working' : ''}`),
       )
@@ -221,13 +221,18 @@ export function graph({ open }) {
     return h(
       'div',
       {
-        class: ['node', agent.working && 'working', agent.person && 'person', focused && 'focused'],
+        class: ['node', agent.working && 'working', agent.person && 'person', focused && 'focused', agent.sessions.some((one) => one.unread) && 'has-unread'],
         style: { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px`, '--lane': agent.color },
         'data-hmz': 'graph-agent',
         'data-role': agent.role,
       },
       head,
-      sessions.length ? h('div', { class: 'node-sessions' }, sessions) : null,
+      h(
+        'div',
+        { class: 'node-sessions' },
+        h('a', { class: 'node-session node-log', href: `${base}/logs/${encodeURIComponent(agent.role)}`, 'data-hmz': 'graph-log' }, h('span', { class: 'session-key mono' }, '≡ log'), h('span', { class: 'dim' }, agent.person ? 'asked and answered' : 'every session')),
+        sessions,
+      ),
     )
   }
 
@@ -235,7 +240,8 @@ export function graph({ open }) {
 }
 
 function heightOf(agent) {
-  return HEAD + (agent ? agent.sessions.length : 0) * ROW + FOOT
+  // The log's row, then a row per session.
+  return HEAD + ((agent ? agent.sessions.length : 0) + 1) * ROW + FOOT
 }
 
 function arrow(id, kind) {
