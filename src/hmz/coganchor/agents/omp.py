@@ -68,7 +68,7 @@ _HOSTING = "hmz-tools"
 #: What a flow's callback is called in front of the agent, ahead of the name the flow gave it:
 #: omp's own tools are called what a flow's may be -- a `write` of the flow's would otherwise
 #: be omp's, or one of those `read-only` asks about -- and opencode's are called this too.
-_PREFIX = "humanize_"
+PREFIX = "humanize_"
 
 #: The files omp declares providers of its own in, under its home, in the order it reads them.
 _MODELS = ("models.yml", "models.yaml")
@@ -159,7 +159,7 @@ class OhMyPiSession(PiSession):
             self._hosting = names
             tools = [
                 {
-                    "name": _PREFIX + one.name,
+                    "name": PREFIX + one.name,
                     "description": one.about,
                     "parameters": one.schema(),
                     # Shown to the model outright rather than left to be searched for.
@@ -189,7 +189,7 @@ class OhMyPiSession(PiSession):
             "id": 0,
             "method": "tools/call",
             "params": {
-                "name": str(said.get("toolName") or "").removeprefix(_PREFIX),
+                "name": str(said.get("toolName") or "").removeprefix(PREFIX),
                 "arguments": said.get("arguments") or {},
             },
         }
