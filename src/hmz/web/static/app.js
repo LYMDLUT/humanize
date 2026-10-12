@@ -34,6 +34,8 @@ let closing = null
 let out = false
 /** Which routing is the latest: one overtaken while its view was loading draws nothing. */
 let routed = 0
+/** The address routed last, as the view drawn for it has since said it. */
+let routedTo = ''
 /** How many routings are still drawing. */
 let drawing = 0
 /** The address of the view under a dialog, which closing the dialog goes back to. */
@@ -55,6 +57,9 @@ export function go(path) {
 
 /** Puts the query of the view the page is on in the address, without a step in its history. */
 export function stays(query) {
+  // An address not routed yet is the next view's: a view finishing what it read in that moment
+  // would otherwise put its own query into it, and the next view would open on that.
+  if (location.hash !== routedTo) return
   const { parts } = where()
   // Only into the address of what is drawn: one gone on to, not drawn yet, is not its to say.
   const here = parts.join('/')
@@ -63,6 +68,7 @@ export function stays(query) {
   for (const [name, value] of Object.entries(query)) if (value !== '' && value !== undefined && value !== null) said.set(name, value)
   const text = said.toString()
   history.replaceState(null, '', `#/${parts.map(encodeURIComponent).join('/')}${text ? `?${text}` : ''}`)
+  routedTo = location.hash
 }
 
 /** Whether the address names a dialog, over the view drawn: what that view does is not to say. */
@@ -78,6 +84,7 @@ export function shut() {
 async function route() {
   if (out) return
   const mine = ++routed
+  routedTo = location.hash
   // Busy until every address asked for is drawn: the view left stands until then, and is not
   // what the address names.
   drawing++
