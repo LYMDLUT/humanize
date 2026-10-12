@@ -21,10 +21,17 @@ from playwright.sync_api import expect
 
 import hmz.coganchor.models
 from tests.integration.doubles_core import install
-from tests.integration.doubles_web import ENGINES, elsewhere, go, opened, served
+from tests.integration.doubles_web import (
+    ENGINES,
+    backed_up_elsewhere,
+    elsewhere,
+    go,
+    opened,
+    served,
+)
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Page
+    from playwright.sync_api import Locator, Page
 
 #: Every settings page, by the word its address ends in.
 _PAGES = (
@@ -92,6 +99,85 @@ def test_a_new_epic_offers_each_role_the_models_its_cli_runs(
         expect(page.locator(".composer-summary")).to_contain_text(
             "assistant: claude/claude-opus-4-1:max"
         )
+
+
+def _centre(node: Locator) -> dict[str, float]:
+    """Where a node's middle is on the graph: what is drawn around the graph can move it."""
+    expect(node).to_be_visible()
+    box = node.bounding_box()
+    canvas = node.page.locator("[data-hmz=graph]").bounding_box()
+    assert box
+    assert canvas
+    return {
+        "x": box["x"] + box["width"] / 2 - canvas["x"],
+        "y": box["y"] + box["height"] / 2 - canvas["y"],
+    }
+
+
+def test_the_graph_is_dragged_anywhere_zoomed_by_the_wheel_and_recentred(
+    project: Path, engine: str
+) -> None:
+    with served() as site, opened(site, engine=engine) as page:
+        _start_chat(page, "move me")
+        expect(page.locator("[data-hmz=thread]")).to_contain_text("did: move me")
+        page.locator("[data-hmz=bar] .crumbs a").click()
+        agent = page.locator("[data-hmz=graph-agent][data-role=assistant]")
+        expect(agent.locator("[data-hmz=graph-session]")).to_be_visible()
+        # Stopped, so nothing it goes on to do redraws the graph while it is moved.
+        page.get_by_role("button", name="Stop").click()
+        page.get_by_role("button", name="Stop").click()
+        expect(page.locator("[data-hmz=bar] .badge")).to_have_text(
+            re.compile("stopped")
+        )
+        # Measured once the graph has stopped moving: what settles around it resizes the canvas.
+        page.wait_for_function(
+            """() => new Promise((settled) => {
+              const at = () => JSON.stringify(document.querySelector(
+                '[data-hmz=graph-agent][data-role=assistant]')?.getBoundingClientRect())
+              const before = at()
+              setTimeout(() => settled(before !== undefined && at() === before), 300)
+            })"""
+        )
+        canvas = page.locator("[data-hmz=graph]").bounding_box()
+        drawn = _centre(agent)
+        assert canvas
+        address = page.url
+
+        # Dragged from a session on the node, past where the graph ends: nothing opens.
+        session = agent.locator("[data-hmz=graph-session]").bounding_box()
+        assert session
+        page.mouse.move(session["x"] + 10, session["y"] + 10)
+        page.mouse.down()
+        page.mouse.move(session["x"] - 290, session["y"] - 190, steps=8)
+        page.mouse.up()
+        moved = _centre(agent)
+        assert abs(moved["x"] - (drawn["x"] - 300)) < 2
+        assert abs(moved["y"] - (drawn["y"] - 200)) < 2
+        assert page.url == address
+
+        # Two fingers slid over a trackpad move it; a pinch and a mouse's wheel zoom it.
+        zoom = page.locator("[data-hmz=graph] + .zoom .zoom-said")
+        before = zoom.inner_text()
+        page.mouse.move(canvas["x"] + canvas["width"] / 2, canvas["y"] + 40)
+        page.mouse.wheel(30, 40)
+        slid = _centre(agent)
+        assert abs(slid["x"] - (moved["x"] - 30)) < 2
+        assert abs(slid["y"] - (moved["y"] - 40)) < 2
+        expect(zoom).to_have_text(before)
+        for wheel in ({"deltaY": -60, "ctrlKey": True}, {"deltaY": -3, "deltaMode": 1}):
+            said = zoom.inner_text()
+            page.evaluate(
+                """(wheel) => document.querySelector('[data-hmz=graph]').dispatchEvent(
+                  new WheelEvent('wheel', { ...wheel, clientX: 300, clientY: 300 }))""",
+                wheel,
+            )
+            expect(zoom).not_to_have_text(said)
+
+        page.get_by_role("button", name="Recenter").click()
+        expect(zoom).to_have_text(before)
+        back = _centre(agent)
+        assert abs(back["x"] - drawn["x"]) < 2
+        assert abs(back["y"] - drawn["y"]) < 2
 
 
 def test_a_model_no_cli_would_list_is_typed(
@@ -323,7 +409,7 @@ def test_the_colours_are_a_pair_under_auto_or_a_theme(
         # A theme is chosen only in Settings: the machine's menu offers none.
         page.locator("[data-hmz=machine-menu]").click()
         expect(page.locator("[role=menu] .choice-label")).to_have_text(
-            ["Import", "Settings", "Usage"]
+            ["Import", "Settings", "Usage", "Download"]
         )
         page.keyboard.press("Escape")
         go(page, "/settings/themes")
@@ -497,7 +583,7 @@ def test_a_newer_release_is_offered_under_the_machine(
         expect(page.locator("[data-hmz=newer]")).to_be_visible()
         page.locator("[data-hmz=machine-menu]").click()
         expect(page.locator("[role=menu] .choice-label")).to_have_text(
-            ["Update", "Import", "Settings", "Usage"]
+            ["Update", "Import", "Settings", "Usage", "Download"]
         )
         expect(page.locator("[role=menu] .choice-about")).to_have_text(["hmz 99.0.0"])
 
@@ -742,6 +828,29 @@ def test_a_backup_target_is_added_picked_at_a_start_and_an_epic_uploaded_to_it(
         assert re.fullmatch(r"Back up epic \S+ \(manual\)\n", log.stdout)
 
 
+def test_an_epic_backed_up_elsewhere_is_downloaded_and_opened(
+    project: Path, engine: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = backed_up_elsewhere(tmp_path, monkeypatch)
+    with served() as site, opened(site, engine=engine) as page:
+        page.locator("[data-hmz=machine-menu]").click()
+        page.get_by_role("menuitem", name="Download").click()
+
+        stored = page.locator(f"[data-hmz=stored-epic][data-epic='{name}']")
+        expect(stored).to_contain_text("hi")
+        # The one target there is is the only one to pick.
+        expect(page.locator("[data-hmz=download-target]")).to_be_hidden()
+        stored.get_by_role("button", name="Download").click()
+
+        page.wait_for_url(re.compile(rf".*#/epics/{re.escape(name)}"))
+        expect(page.locator("[data-hmz=bar] .badge")).to_have_text(re.compile("done"))
+        expect(page.locator("[data-hmz=epic]")).to_have_count(1)
+
+        go(page, "/download")
+        expect(stored).to_contain_text("Here")
+        expect(stored.get_by_role("link", name="Open")).to_be_visible()
+
+
 @pytest.mark.parametrize(("width", "dark"), [(1280, False), (390, True)])
 def test_the_panel_says_every_figure_in_words_and_within_its_edges(
     project: Path, engine: str, width: int, dark: bool
@@ -805,6 +914,31 @@ def test_an_earlier_epic_is_read_out_of_its_logs_and_asked_beside(
         expect(page.locator("[data-hmz=btw-log]")).to_contain_text(
             "read-only side copy of the flow session"
         )
+
+
+@pytest.mark.parametrize("gatewayable", [True, False])
+def test_the_ways_through_the_gateway_are_one_group_or_the_line_that_adds_them(
+    project: Path, monkeypatch: pytest.MonkeyPatch, engine: str, *, gatewayable: bool
+) -> None:
+    from hmz.coganchor import backends, gateway
+
+    claude = backends.named("claude")
+    assert claude is not None
+    monkeypatch.setattr(gateway, "gatewayable", lambda: gatewayable)
+    with served() as site, opened(site, engine=engine) as page:
+        go(page, "/settings/accounts")
+        page.locator("#account-cli").select_option("claude")
+        group = page.locator("#account-way optgroup[label=LiteLLM]")
+        wants = page.locator("[data-hmz=gateway-wants]")
+        if gatewayable:
+            expect(group.locator("option")).to_have_count(len(backends.routed(claude)))
+            expect(
+                page.locator("#account-way > option[value^=litellm-]")
+            ).to_have_count(0)
+            expect(wants).to_be_hidden()
+        else:
+            expect(group).to_have_attribute("disabled", "")
+            expect(wants).to_contain_text("litellm is not installed; run: uv pip")
 
 
 #: Drags a file over the page, a step at a time, as one is dragged out of a folder: the file is
