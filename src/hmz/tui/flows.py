@@ -63,6 +63,7 @@ from .pick import (
     Popup,
     Question,
     Sheet,
+    Targets,
     _chip,
     _hmz,
     _many,
@@ -117,12 +118,14 @@ _UP = {
 }
 
 #: The rows of the roles page that are about the run rather than any role: what the flow
-#: itself takes, what a run may spend, and whether it is profiled as well as traced. Each under
+#: itself takes, what a run may spend, whether it is profiled as well as traced, and where it
+#: is backed up. Each under
 #: a mark no name has, since a row id is otherwise an agent's place among the roles or an
 #: environment's name.
 _PARAMS = f"{_APART_MARK}params"
 _BUDGET = f"{_APART_MARK}budget"
 _PROFILING = f"{_APART_MARK}profile"
+_BACKING = f"{_APART_MARK}backup"
 
 #: What each button under a page is known by, beside the ones `/settings` has.
 _ACT_MORE, _ACT_UPDATE, _ACT_UNINSTALL, _ACT_COPY = (
@@ -285,6 +288,7 @@ class Flows(Drafts[Chosen]):
         envs: Mapping[str, str] | None = None,
         budget: Budget | None = None,
         profile: bool = False,
+        backup: tuple[str, ...] | None = None,
         unavailable: frozenset[str] = frozenset(),
         running: bool = False,
         inside: bool = False,
@@ -302,6 +306,8 @@ class Flows(Drafts[Chosen]):
           envs: Where each of its environment roles is, by role.
           budget: What a run of it may spend here, or None for none yet.
           profile: Whether a run of it here is profiled as well as traced.
+          backup: The backup targets an epic of it here goes to, by name, or None for the
+            defaults.
           unavailable: The optional backends among them that still need installing.
           running: Whether a flow is running, which is what takes the other pages away.
           inside: Whether to open on what the flow runs on rather than on a list, for a menu
@@ -312,6 +318,9 @@ class Flows(Drafts[Chosen]):
         self._agents = dict(agents)
         self._unavailable = unavailable
         self._kept = kept
+        #: Where an epic is backed up, or None for wherever the defaults say when it starts.
+        self._backup = backup
+        self._defaults = _hmz().backups.defaults()
         self._flow: str = flow
         #: What the flow declares, read once per flow rather than on every redraw: reading
         #: it means importing the flow, and the roles page is drawn on every keystroke.
@@ -335,6 +344,7 @@ class Flows(Drafts[Chosen]):
             self._params = params_of(flow, self._held(flow).get("params") or {})
             self._budget = budget_of(flow)
             self._profile = _hmz().settings.profile(flow)
+            self._backup = _hmz().settings.backup(flow)
         #: What the menu opened holding, which it goes back to where the flow it is holding
         #: instead is uninstalled from under it: a draft of a flow that is gone is nothing
         #: to save.
@@ -346,6 +356,7 @@ class Flows(Drafts[Chosen]):
             self._params,
             self._budget,
             self._profile,
+            self._backup,
         )
         #: Whether what the flow runs on is the whole of this menu, there being no list
         #: behind it to step back to: while a flow runs, and for a flow that was named.
@@ -952,6 +963,16 @@ class Flows(Drafts[Chosen]):
                 "samples the programs agents start" if self._profile else "traced only",
             )
         )
+        backup = self._backup if self._backup is not None else self._defaults
+        lines.append(
+            (
+                _BACKING,
+                "backup",
+                ", ".join(backup) or "none",
+                "where each epic is backed up"
+                + (" (the defaults)" if self._backup is None else ""),
+            )
+        )
         landing = self._lands([held for held, _, _, _ in lines])
         rows: list[Option | None] = []
         for held, named, value, about in lines:
@@ -1059,6 +1080,7 @@ class Flows(Drafts[Chosen]):
             self._params = params_of(name, self._held(name).get("params") or {})
             self._budget = budget_of(name)
             self._profile = _hmz().settings.profile(name)
+            self._backup = _hmz().settings.backup(name)
             self._cursors.pop(ROLES, None)
             self.changed()
         # On to what the flow itself takes, where it takes anything, and then to its roles:
@@ -1114,6 +1136,25 @@ class Flows(Drafts[Chosen]):
             self.opened()
         if isinstance(spends, Budgeted):
             self._budget = spends.budget()
+            self.changed()
+        self._fill()
+
+    @work
+    async def _backs_up(self) -> None:
+        """Asks which backup targets an epic goes to, from its row on the roles page."""
+        if not _hmz().backups.targets():
+            self._said = iffy("no backup targets: add one on /settings backup")
+            self._fill()
+            return
+        if self.opening():
+            return
+        backup = self._backup if self._backup is not None else self._defaults
+        try:
+            chosen = await self._shown(Targets(backup))
+        finally:
+            self.opened()
+        if chosen is not None and set(chosen) != set(backup):
+            self._backup = chosen
             self.changed()
         self._fill()
 
@@ -1212,6 +1253,7 @@ class Flows(Drafts[Chosen]):
                 self._params,
                 self._budget,
                 self._profile,
+                self._backup,
             )
         )
 
@@ -1615,10 +1657,10 @@ class Flows(Drafts[Chosen]):
             return
         if called == self._flow.partition(":")[0]:
             # The flow the menu was holding is gone, and with it the draft of it.
-            flow, declared, runs, envs, params, budget, profile = self._opened
+            flow, declared, runs, envs, params, budget, profile, backup = self._opened
             self._flow, self._declared, self._runs = flow, declared, dict(runs)
             self._envs, self._params, self._budget = dict(envs), params, budget
-            self._profile = profile
+            self._profile, self._backup = profile, backup
             self._changed = False
         if self._page == ROLES:
             # And its page: back to what there is to run, saying so.
@@ -1839,6 +1881,8 @@ class Flows(Drafts[Chosen]):
         """
         if held == _BUDGET:
             self._budgets()
+        elif held == _BACKING:
+            self._backs_up()
         elif held == _PARAMS:
             self._configures()
         elif held.startswith("@"):

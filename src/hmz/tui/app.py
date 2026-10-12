@@ -1058,6 +1058,9 @@ class Humanize(App[None]):
         #: tracing them. Beside the budget, and remembered with it: like what a run may
         #: spend, it is a thing about a run of this flow rather than one of its params.
         self._profile = self.settings.profile(self._flow_named)
+        #: The backup targets an epic of it here goes to, by name, or None for the defaults
+        #: as it starts: chosen on `/flow`, and remembered with the budget per flow.
+        self._backup = self.settings.backup(self._flow_named)
         #: Where each role's harness went in the run going, by role: what the runtime it works
         #: on came to, which only the machine could say.
         self._harnessed: dict[str, str] = {}
@@ -3233,6 +3236,7 @@ class Humanize(App[None]):
                 envs=self._envs if holding else None,
                 budget=self._budget if holding else None,
                 profile=self._profile if holding else False,
+                backup=self._backup if holding else None,
                 unavailable=frozenset(unavailable),
                 running=running,
                 # A flow that was named has been chosen, so what is left to answer is what
@@ -3328,6 +3332,7 @@ class Humanize(App[None]):
                 envs,
                 budget=budget_of(flow),
                 profile=self.settings.profile(flow),
+                backup=self.settings.backup(flow),
             )
         if set(agents) != set(declared.roles):
             return None
@@ -3343,7 +3348,15 @@ class Humanize(App[None]):
         budget = budget_of(flow)
         if budget is None and not declared.unbounded:
             return None
-        return Chosen(flow, agents, envs, params, budget, self.settings.profile(flow))
+        return Chosen(
+            flow,
+            agents,
+            envs,
+            params,
+            budget,
+            self.settings.profile(flow),
+            self.settings.backup(flow),
+        )
 
     def _took_flow(self, chosen: Chosen, *, running: bool, starting: str = "") -> None:
         """Applies what the flow menu was saved with, and writes it down.
@@ -3365,6 +3378,7 @@ class Humanize(App[None]):
             chosen.params,
             chosen.budget,
             chosen.profile,
+            chosen.backup,
         ) == (
             self._flow_named,
             self._models,
@@ -3372,6 +3386,7 @@ class Humanize(App[None]):
             self._params,
             self._budget,
             self._profile,
+            self._backup,
         )
         if chosen.flow != self._flow_named:
             self._harnessed = {}
@@ -3384,6 +3399,7 @@ class Humanize(App[None]):
         self._models, self._envs = dict(chosen.agents), dict(chosen.envs)
         self._params, self._budget = chosen.params, chosen.budget
         self._profile = chosen.profile
+        self._backup = chosen.backup
         self.settings.remember(
             chosen.flow,
             self._models,
@@ -3398,6 +3414,8 @@ class Humanize(App[None]):
             if chosen.budget is not None
             else {},
             profile=chosen.profile,
+            # None is the defaults, left for whatever they are when an epic starts.
+            backup=chosen.backup,
         )
         if running:
             self._reconfigured()
@@ -3796,6 +3814,7 @@ class Humanize(App[None]):
             self._budget = None
         # Profiled as the run it goes on from was, so its trace is one trace of one kind.
         self._profile = ran.profile
+        self._backup = self.settings.backup(ran.flow)
         self.show(
             f"[dim]resuming {escape(ran.name)}: running {escape(ran.flow)} "
             "from saved state[/dim]"
@@ -3869,8 +3888,20 @@ class Humanize(App[None]):
             if self._budget is not None
             else None,
             profile=self._profile,
+            backup=self._backed_up(),
             resume=str(resume) if resume is not None else False,
         )
+
+    def _backed_up(self) -> list[str] | None:
+        """The backup targets chosen on `/flow` that settings still has, or None for the defaults.
+
+        A target taken away on `/settings` since it was chosen is one an epic can no longer
+        go to, rather than a reason to refuse starting one.
+        """
+        if self._backup is None:
+            return None
+        there = {one.name for one in self.hmz.backups.targets()}
+        return [one for one in self._backup if one in there]
 
     def _not_started(self) -> None:
         """Takes a start that was refused as nothing starting, which the refusal has said."""
@@ -4702,7 +4733,7 @@ _COMMANDS: tuple[Command, ...] = (
     ),
     Command(
         "settings",
-        "Every setting: general, accounts, fallback, runtimes, workspace",
+        "Every setting: general, accounts, fallback, runtimes, backup, workspace",
         lambda app, argv: app.action_settings(argv[0] if argv else ""),
         takes="[page]",
         offers=_PAGES,

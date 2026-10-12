@@ -14,7 +14,13 @@ if TYPE_CHECKING:
     from hmz.runtime.epic import Ran
 
 
-def _does(*, resumable: bool, foreign: str = "") -> pick.Does:
+def _does(
+    *,
+    resumable: bool,
+    foreign: str = "",
+    uploads: bool = False,
+    backed: dict[str, dict[str, object]] | None = None,
+) -> pick.Does:
     ran = SimpleNamespace(
         at=Path("/epics/one"),
         began="2026-10-12T01:02:03Z",
@@ -22,8 +28,11 @@ def _does(*, resumable: bool, foreign: str = "") -> pick.Does:
         how="done",
         agents={},
         sessions=[],
+        backed=backed or {},
     )
-    return pick.Does(cast("Ran", ran), resumable=resumable, foreign=foreign)
+    return pick.Does(
+        cast("Ran", ran), resumable=resumable, foreign=foreign, uploads=uploads
+    )
 
 
 @pytest.mark.parametrize(
@@ -54,3 +63,20 @@ def test_does_offers_resume_only_where_it_can_and_says_why_not(
 
     assert [one[0] for one in does.rows()] == rows
     assert does.nothing() == said
+
+
+def test_does_offers_upload_where_there_is_a_target_and_says_how_backups_went() -> None:
+    does = _does(
+        resumable=False,
+        uploads=True,
+        backed={
+            "lab": {"at": "2026-10-12T01:05:00Z", "ok": True, "error": ""},
+            "home": {"at": "2026-10-12T01:06:00Z", "ok": False, "error": "denied"},
+        },
+    )
+
+    assert [one[0] for one in does.rows()] == ["export", "exomyth", "upload"]
+    assert does.about.splitlines()[-2:] == [
+        "lab: backed up 2026-10-12 01:05",
+        "home: failed 2026-10-12 01:06: denied",
+    ]

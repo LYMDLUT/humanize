@@ -65,7 +65,7 @@ Each target says when, in `policies`. Tick any of them, or none:
 A backup never holds anything up. It runs behind the epic, one at a time per target, and a
 target that cannot be reached is written down as a failed backup rather than an epic that
 failed. `hmz exec` waits up to a minute for its last backups once it has printed its answer,
-then leaves.
+then leaves; `hmz` waits up to 15 seconds for the ones it started once you close it.
 
 ## Choosing the targets
 
@@ -76,10 +76,13 @@ $ hmz exec -f chat -a assistant=claude/claude-haiku-4-5 --backup lab --backup ho
 $ hmz exec -f chat -a assistant=claude/claude-haiku-4-5 --backup none "hi"
 ```
 
-The epic remembers which targets it was started with. In [`hmz web`](/user/web), add and change
-targets under **Settings → Backup**, and pick an epic's under **Options → Backup** as you start
-it: the defaults are ticked until you save or start the flow with others, and from then on what
-you chose for that flow in that directory is.
+The epic remembers which targets it was started with. In `hmz`, the same targets are
+written on the [Backup page](/user/settings#backup) of `/settings` -- `/settings backup`
+-- and a flow's **backup** row on `/flow` switches on the ones its epics go to. In
+[`hmz web`](/user/web), add and change targets under **Settings → Backup**, and pick an
+epic's under **Options → Backup** as you start it. Either way the defaults are chosen until
+you save or start the flow with others, and from then on what you chose for that flow in
+that directory is.
 
 ## Backing an epic up by hand
 
@@ -92,6 +95,9 @@ $ hmz backup 20261012T091500.123Z-1a2b3c --to home
 Without `--to`, the epic goes to the targets it was started with, else to the defaults. An
 epic [imported](/user/export) from another machine goes to the defaults: the targets it was
 started with were that machine's, and so were its backups, which this machine does not show.
+
+In `hmz`, open the epic on `/epics` and choose **upload**, which does the same without waiting;
+the epic then says how its last backup to each target went.
 
 In [`hmz web`](/user/web), **Upload** in an epic's menu, or at the top of the epic, does the same
 without waiting for it; hover it for how the last backup to each target went.
