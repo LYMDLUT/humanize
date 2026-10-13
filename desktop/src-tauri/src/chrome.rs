@@ -1,16 +1,10 @@
-//! The window's chrome, one with the page: no title bar of its own but the traffic lights,
-//! standing over the page's top row, and the page told it is in the app, and when the window is
-//! full screen and they are gone, to draw that row around them.
+//! The window's chrome, one with the page: no title bar of its own but the traffic lights, where
+//! macOS puts them, over a strip the page keeps for them, and the page told it is in the app, and
+//! when the window is full screen and they are gone, to keep it no more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{
-    LogicalPosition, Manager, Runtime, TitleBarStyle, WebviewWindow, WebviewWindowBuilder, Window,
-};
-
-/// Where the traffic lights stand: centred on the page's top row, 57 pixels tall, and inset from
-/// its left edge as far as from the top.
-const LIGHTS: LogicalPosition<f64> = LogicalPosition { x: 20.0, y: 21.0 };
+use tauri::{Manager, Runtime, TitleBarStyle, WebviewWindow, WebviewWindowBuilder, Window};
 
 /// What WKWebView says it is where it is not told otherwise.
 const WEBKIT: &str =
@@ -27,7 +21,6 @@ pub fn dress<'a, R: Runtime, M: Manager<R>>(
     window
         .title_bar_style(TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(LIGHTS)
         .user_agent(&user_agent(version))
 }
 

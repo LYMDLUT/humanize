@@ -68,7 +68,7 @@ def _start_chat(page: Page, task: str) -> None:
     )
     page.locator("[data-hmz=composer-text]").fill(task)
     page.locator("[data-hmz=composer-text]").press("Enter")
-    page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/assistant%2F1$"))
+    page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/[^/]+%2F1$"))
 
 
 def test_a_new_epic_offers_each_role_the_models_its_cli_runs(
@@ -143,7 +143,7 @@ def test_the_graph_is_dragged_anywhere_zoomed_by_the_wheel_and_recentred(
         _start_chat(page, "move me")
         expect(page.locator("[data-hmz=thread]")).to_contain_text("did: move me")
         page.locator("[data-hmz=bar] .crumbs a").click()
-        agent = page.locator("[data-hmz=graph-agent][data-role=assistant]")
+        agent = page.locator("[data-hmz=graph-agent]").filter(has_text="assistant")
         expect(agent.locator("[data-hmz=graph-session]")).to_be_visible()
         # Stopped, so nothing it goes on to do redraws the graph while it is moved.
         page.get_by_role("button", name="Stop").click()
@@ -155,7 +155,7 @@ def test_the_graph_is_dragged_anywhere_zoomed_by_the_wheel_and_recentred(
         # settles around it -- what the run spent, how long it took -- resizes the canvas.
         page.wait_for_function(
             """() => new Promise((settled) => {
-              const at = () => JSON.stringify(['[data-hmz=graph-agent][data-role=assistant]',
+              const at = () => JSON.stringify(['[data-hmz=graph-agent]:not(.person)',
                 '[data-hmz=graph]'].map((one) => document.querySelector(one)
                   ?.getBoundingClientRect()))
               const before = at()
@@ -233,7 +233,9 @@ def test_an_epic_started_from_the_page_is_drawn_answered_read_and_stopped(
         expect(thread).to_contain_text("did: hello there")
         expect(page.locator("[data-hmz=epic] .pill-live")).to_be_visible()
         say = page.locator("[data-hmz=say] textarea")
-        expect(say).to_have_attribute("placeholder", "Message assistant/1")
+        # Its conversation goes by its agent's own name, not by the role it fills.
+        expect(say).to_have_attribute("placeholder", re.compile(r"^Message \w+/1$"))
+        expect(say).not_to_have_attribute("placeholder", "Message assistant/1")
         say.fill("and again")
         say.press("Enter")
         expect(thread).to_contain_text("did: and again")
@@ -243,7 +245,7 @@ def test_an_epic_started_from_the_page_is_drawn_answered_read_and_stopped(
         expect(page.locator("[data-hmz=waiting]")).to_have_count(0)
 
         page.locator("[data-hmz=bar] .crumbs a").click()
-        agent = page.locator("[data-hmz=graph-agent][data-role=assistant]")
+        agent = page.locator("[data-hmz=graph-agent]").filter(has_text="assistant")
         expect(agent).to_be_visible()
         expect(agent.locator("[data-hmz=graph-session] .unread")).to_have_count(0)
         page.get_by_role("button", name="Stop").click()
@@ -341,7 +343,7 @@ def test_a_chat_asks_in_its_conversation_and_is_answered_there(
         )
         assert started[0] == 200, started[1]
         go(page, "/live")
-        page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/assistant%2F1$"))
+        page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/[^/]+%2F1$"))
 
         # What it asks is asked in the thread, its answers there to pick, never as a card.
         thread = page.locator("[data-hmz=thread]")
@@ -632,8 +634,9 @@ def test_in_the_macos_app_the_top_row_is_drawn_around_the_traffic_lights(
     project: Path, engine: str
 ) -> None:
     """The app's window draws the page to its top edge, its traffic lights over the top left."""
-    # How far across they reach, at most.
+    # How far across, and how far down, they reach, at most.
     lights = 76
+    strip = 30
     clicked = "a, button, input, select, textarea, summary, [role=tab]"
 
     def left(page: Page, selector: str) -> float:
@@ -641,10 +644,16 @@ def test_in_the_macos_app_the_top_row_is_drawn_around_the_traffic_lights(
         assert box
         return box["x"]
 
+    def top(page: Page, selector: str) -> float:
+        box = page.locator(selector).first.bounding_box()
+        assert box
+        return box["y"]
+
     with served() as site, opened(site, engine=engine) as page:
         assert page.evaluate("document.documentElement.dataset.shell") is None
         expect(page.locator("[data-tauri-drag-region]")).to_have_count(0)
         assert left(page, ".brand") < lights
+        assert top(page, ".brand") < strip
 
     # Said before the page is drawn: by the time its body is, so it never moves.
     at_body = (
@@ -657,11 +666,17 @@ def test_in_the_macos_app_the_top_row_is_drawn_around_the_traffic_lights(
         opened(site, engine=engine, user_agent=_APP, init=at_body) as page,
     ):
         assert page.evaluate("window.shellAtBody") == "macos"
-        assert left(page, ".brand") >= lights
+        # The sidebar keeps a strip for them, its top row drawn under it.
+        assert top(page, ".brand") >= strip
+        assert top(page, ".side-fold") >= strip
         for row in ("[data-hmz=sidebar] .side-top", "[data-hmz=bar]"):
             expect(page.locator(row)).to_have_attribute(
                 "data-tauri-drag-region", "deep"
             )
+        # The view itself, whose strip over what it draws is all of it not covered.
+        expect(page.locator("[data-hmz=page]")).to_have_attribute(
+            "data-tauri-drag-region", ""
+        )
         expect(page.locator(f":is({clicked})[data-tauri-drag-region]")).to_have_count(0)
         # A menu opened in a row is not what the window is dragged by.
         page.locator("[data-hmz=daemon-bar]").click()
@@ -670,19 +685,21 @@ def test_in_the_macos_app_the_top_row_is_drawn_around_the_traffic_lights(
         )
         page.keyboard.press("Escape")
 
+        # Across the whole window: the view is drawn under the strip too.
         page.locator(".side-fold").click()
-        assert left(page, "[data-hmz=bar] .bar-side") >= lights
+        assert top(page, "[data-hmz=bar] .bar-side") >= strip
+        assert left(page, "[data-hmz=bar] .bar-side") < lights
         # Full screen, where they are gone, it is drawn as in a browser.
         page.evaluate(
             "document.documentElement.toggleAttribute('data-fullscreen', true)"
         )
-        assert left(page, "[data-hmz=bar] .bar-side") < lights
+        assert top(page, "[data-hmz=bar] .bar-side") < strip
 
         page.set_viewport_size({"width": 700, "height": 800})
         page.evaluate(
             "document.documentElement.toggleAttribute('data-fullscreen', false)"
         )
-        assert left(page, "[data-hmz=bar] .bar-side") >= lights
+        assert top(page, "[data-hmz=bar] .bar-side") >= strip
 
 
 def test_every_label_is_a_word_or_a_phrase(project: Path, engine: str) -> None:
@@ -756,8 +773,10 @@ def test_an_epic_is_read_as_its_log_and_its_agents_as_a_list(
 
         page.locator("[data-hmz=bar] .crumbs a").click()
         page.locator(".shape-switch").get_by_role("button", name="List").click()
-        listed = page.locator("[data-hmz=agent-list] [data-role=assistant]")
-        expect(listed).to_contain_text("assistant/1")
+        listed = page.locator("[data-hmz=agent-list] [data-agent]").filter(
+            has_text="assistant"
+        )
+        expect(listed).to_contain_text(re.compile(r"\w+/1"))
         listed.get_by_role("link", name="≡ log").click()
         expect(page.locator("[data-hmz=thread]")).to_contain_text("did: log me")
         page.locator("[data-hmz=bar] .crumbs a").click()
@@ -825,7 +844,7 @@ def test_a_backup_target_is_added_picked_at_a_start_and_an_epic_uploaded_to_it(
         ).to_have_value("claude-haiku-4-5")
         page.locator("[data-hmz=composer-text]").fill("back me up")
         page.locator("[data-hmz=composer-text]").press("Enter")
-        page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/assistant%2F1$"))
+        page.wait_for_url(re.compile(r".*#/epics/[^/]+/sessions/[^/]+%2F1$"))
         page.get_by_role("button", name="Stop").click()
         page.get_by_role("button", name="Stop").click()
         expect(page.locator("[data-hmz=bar] .badge")).to_have_text(
@@ -881,7 +900,7 @@ def test_the_panel_says_every_figure_in_words_and_within_its_edges(
             page.locator("[data-hmz=bar] .panel-toggle").click()
         inspector = page.locator("[data-hmz=inspector]")
         expect(inspector.locator("[data-hmz=environments]")).to_contain_text(
-            "assistant/1 workspace · local"
+            re.compile(r"\w+/1 workspace · local")
         )
         expect(inspector.locator("[data-hmz=spending]")).to_contain_text("cache write")
         assert not re.search(
@@ -917,7 +936,7 @@ def test_an_earlier_epic_is_read_out_of_its_logs_and_asked_beside(
 
         page.locator("[data-hmz=epic]", has_text="remember papaya").click()
         page.locator(".graph-note").get_by_role("button", name="Read turns").click()
-        agent = page.locator("[data-hmz=graph-agent][data-role=assistant]")
+        agent = page.locator("[data-hmz=graph-agent]").filter(has_text="assistant")
         expect(agent.locator(".capsule")).to_have_count(1)
 
         agent.locator("[data-hmz=graph-session]").click()
@@ -927,7 +946,7 @@ def test_an_earlier_epic_is_read_out_of_its_logs_and_asked_beside(
 
         page.get_by_role("tab", name="Aside").click()
         aside = page.locator("[data-hmz=btw]")
-        aside.get_by_role("combobox").select_option("assistant/1")
+        aside.get_by_role("combobox").select_option(index=1)
         aside.locator("textarea").fill("what was the word")
         aside.locator("textarea").press("Enter")
         expect(page.locator("[data-hmz=btw-log]")).to_contain_text(
