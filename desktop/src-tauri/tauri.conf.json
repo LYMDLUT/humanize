@@ -32,9 +32,10 @@
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-",
       "dmg": {
-        "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 180, "y": 180 },
-        "applicationFolderPosition": { "x": 480, "y": 180 }
+        "background": "dmg/background.tiff",
+        "windowSize": { "width": 720, "height": 612 },
+        "appPosition": { "x": 210, "y": 196 },
+        "applicationFolderPosition": { "x": 510, "y": 196 }
       }
     }
   },
