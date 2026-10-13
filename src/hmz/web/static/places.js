@@ -2,12 +2,14 @@
 // opened here, the one `hmz web` was started in first. Picking one is picking where an epic
 // runs, whose flows are on offer, and whose settings are read.
 
-import { get, post } from './api.js'
+import { get, onDaemon, post } from './api.js'
 import { fill, h, icon } from './dom.js'
 import { pathPicker } from './paths.js'
 import { choice, dragged, follow, menu, section } from './shell.js'
 
 let known = null
+// Another daemon's workspaces are others.
+onDaemon(() => (known = null))
 
 /** Every workspace there is to offer, read again where asked to. */
 export async function workspaces(again = false) {
@@ -97,10 +99,14 @@ export function workspacePicker(chosen, changed) {
     }
   })
 
-  workspaces().then((answer) => {
-    list = answer.workspaces
-    if (!path) path = answer.here
-    set(path)
-  })
+  workspaces().then(
+    (answer) => {
+      list = answer.workspaces
+      if (!path) path = answer.here
+      set(path)
+    },
+    // A daemon that cannot be reached: the view it is on says why.
+    () => {},
+  )
   return { node, set, value: () => path }
 }

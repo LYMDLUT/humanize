@@ -143,7 +143,16 @@ Each view is an address after `#`, so it can be kept and opened again:
 | `#/flows?tab=verses[&verse=]` | The flowverses, one opened. |
 | `#/search[?status=&flow=&q=&offset=]` | A dialog finding epics. `status`: how it went, `running` or `unfinished`. |
 | `#/download[?target=]` | A dialog downloading an epic out of a backup target: the first in settings without `target`. |
-| `#/settings/<page>[?days=]` | A dialog: `general`, `themes`, `accounts`, `fallback`, `runtimes`, `backup`, `workspace` or `usage`; `days` is how far `usage` looks back (7, 30, 90 or 365; default 30), by UTC day. |
+| `#/settings/<page>[?days=]` | A dialog: `general`, `themes`, `accounts`, `fallback`, `runtimes`, `backup`, `workspace`, `usage`, `daemons` or `notifications`; `days` is how far `usage` looks back (7, 30, 90 or 365; default 30), by UTC day. |
+
+Every address above is of one daemon. `#/@<name>/<view>` -- `#/@local/new`, `#/@gpu/epics/<name>`
+-- is that view of the daemon named; an address naming none is Local's, as every address
+written before daemons were is. The page shows only the daemon its address names: every link
+it draws keeps the `@<name>` the address carries, and going to another daemon's address draws
+the view and the sidebar again, of that daemon, closing what the page streamed of the last.
+Everything the page asks of a daemon is under `/d/<name>/api/…`, Local's `/d/local/api/…`
+being the same as `/api/…`; what is the same whichever daemon the page is on --
+`/api/daemons…` and `/api/notifications…` -- is asked of Local, unscoped.
 
 The page keeps a few conveniences in the browser's `localStorage`, each forgotten without
 harm: the colours chosen as `hmz-theme` (`light`, `dark`, or absent for the system's), a sidebar
@@ -275,8 +284,61 @@ Every `error` but the last is the runtime's own sentence, e.g.
 | `POST /api/runtimes/check` | `backend`, `name` | What it said: `reached`, `said`, `home`, `cpus`, `memory`, `gpus`, `usable`, `gpu_memory`, `runtimes`, `version`, `short`, `nodes` |
 | `GET /api/runtimes/hosts` | | `hosts` your ssh config names (`alias`, `host`, `user`, `port`, `identity_files`, `proxy_jump`, `saved`) |
 | `POST /api/runtimes/import` | `names`; `update` (bool) | As `GET /api/runtimes` |
+| `GET /api/daemons` | | `daemons`: `Local` first, then each ssh daemon (`name`, `label`, `host`, `user`, `port`, `identity_file`, `proxy_jump`, `options` as `[keyword, value]` pairs, `alias`, `config`) with `state`, `detail` and `version` |
+| `POST /api/daemons` | `name`, `fields`; `replace` (bool) | As `GET` |
+| `POST /api/daemons/remove` | `name` | As `GET` |
+| `GET /api/daemons/hosts` | | `hosts` your ssh config names that are not daemons yet (`alias`, `name`, `host`, `user`, `port`, `identity_files`, `proxy_jump`) |
+| `POST /api/daemons/import` | `aliases` | As `GET`, and `added`: the daemons made, skipping any already there |
+| `GET /api/daemons/{name}/state` | | `state` (`idle`, `connecting`, `installing`, `up` or `failed`), `detail` (what was said last, such as uv's last line) and `version` (its `hmz`'s) |
+| `POST /api/daemons/{name}/connect` | | As `GET …/state`, once it is being reached: its `hmz` installed at this version where none or another is and it holds no running epics, `hmz web --no-open --attached` started there over ssh, and a port of this machine forwarded to it |
+| any `/d/{name}/api/…` | as `/api/…` there | What that daemon's own interface answers, passed through as it comes -- a stream included -- signed in with its key, which no page sees; `503` while it is not up, `404` for a daemon not written down |
 
 An account is listed by the names of the variables it sets (`sets`), never by a value.
+
+### Notices {#api-notices}
+
+What happened to this machine's runs worth telling somebody about. They are worked out of each
+workspace's host [`status`](/reference/daemon#status), asked every **2 s** without attaching to
+any host, so a host goes as it would with nobody reading. Anything already standing when
+`hmz web` starts is not news.
+
+| Method and path | Takes | Answers |
+| --- | --- | --- |
+| `GET /api/notices` | `after` (an `id`; `0`, the default, for every one kept) | `notices` (those kept after it, oldest first; the last **200**), `last` (the newest `id`, `0` for none); `400` where `after` is not a whole number |
+| `GET /api/notices/stream` | `Last-Event-ID` header, or `?last=` | `text/event-stream`: each `notice` event's `id` is its `id` and its data the notice, from after the one named (without one, from now on), then each as it comes; `: quiet` after **15 s** of nothing |
+
+A notice is `id` (a whole number, larger than any before it, on this machine too after
+`hmz web` starts again), `kind`, `workspace`, `epic`, `flow`, `task`, `role`, `text` and `at`
+(Unix seconds):
+
+| `kind` | When | `role`, `text` |
+| --- | --- | --- |
+| `done` | An epic ended done | `""`, `""` |
+| `failed` | An epic ended failed, crashed, refused or over its budget | `""`, why |
+| `stopped` | An epic was stopped | `""`, `""` |
+| `asked` | A flow asks a person a question (mode `ask`) | The role asking, the question |
+| `listening` | A flow waits for what to say next: a chat between turns (mode `listen`) | The role asking, what it asks |
+
+### Notifications {#api-notifications}
+
+What every daemon's notices come to, served by the interface a page is open on alone: its own
+machine's as they are heard, and each SSH daemon's while it is reached, off the
+`/api/notices/stream` that daemon's own interface serves -- from what it says once first
+reached, and from where it was last heard after that. A notification is the notice, with its own
+`id` (counted from `1` each time `hmz web` starts), `daemon` (`local` or the daemon's name) and
+`read`. The last **200** are kept, in memory.
+
+| Method and path | Takes | Answers |
+| --- | --- | --- |
+| `GET /api/notifications` | | `items` (newest first), `unread` (how many are not read) |
+| `GET /api/notifications/stream` | `Last-Event-ID` header, or `?last=` | `text/event-stream`: a `notification` event, `id` its `id`, for each kept after the one named -- every one kept where it names one later than any here -- then each as it comes; with none, from now. `: quiet` after **15 s** of nothing |
+| `POST /api/notifications/read` | `ids` (a list), or `all: true` | As `GET` |
+| `POST /api/notifications/clear` | | As `GET`, with nothing kept |
+| `GET /api/notifications/settings` | | `kinds` (`{done, failed, stopped, asked, listening}`: whether each is told) and `system` (whether the page asks the system to show them too), as [`notifications`](/reference/settings#machine-settings) holds them |
+| `POST /api/notifications/settings` | any of `kinds` (any of those five, each a bool), `system` (bool) | As `GET`; `400`, and nothing written, for anything else |
+
+A notice of a kind turned off is never kept nor sent. Which kinds are told is read afresh for
+every notice, so a change takes effect at once.
 
 ## The stream {#stream}
 

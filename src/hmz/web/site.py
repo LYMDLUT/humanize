@@ -25,6 +25,7 @@ import os
 import secrets
 import shutil
 import socket
+import socketserver
 import string
 import sys
 import tempfile
@@ -39,11 +40,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from . import (
     accounts,
+    daemons,
     fallbacks,
     flows,
     held,
+    notices,
+    notifications,
     paths,
     places,
+    proxy,
+    remote,
     runs,
     runtimes,
     settings,
@@ -54,7 +60,10 @@ from .routing import Asked, Download, Made, Refusal, Route, Stream
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from .notices import Notices
+    from .notifications import Notifications
     from .places import Places
+    from .remote import Remotes
     from .runs import Runs
 
 __all__ = ["Site"]
@@ -68,10 +77,17 @@ ROUTES: tuple[Route, ...] = (
     *accounts.ROUTES,
     *fallbacks.ROUTES,
     *runtimes.ROUTES,
+    *daemons.ROUTES,
     *paths.ROUTES,
     *places.ROUTES,
     *verses.ROUTES,
+    *notices.ROUTES,
+    *remote.ROUTES,
+    *notifications.ROUTES,
 )
+
+#: What a daemon is called in the paths a page asks another machine's daemon by.
+_DAEMON = frozenset(string.ascii_letters + string.digits + "._-")
 
 #: How many ports any would do for are tried before one free on both loopbacks is given up on.
 _PORTS = 8
@@ -120,7 +136,21 @@ _KIND = frozenset(string.ascii_lowercase + string.digits)
 _LONGEST = 200
 
 
-class Site(ThreadingHTTPServer):
+class _Bound(ThreadingHTTPServer):
+    """A server bound without asking the network what its loopback is called.
+
+    `HTTPServer.server_bind` looks the address up by reverse DNS, for a name this interface
+    never uses -- a lookup that can hang for half a minute where the resolver is slow.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
+class Site(_Bound):
     """The server, holding what its routes are answered from.
 
     Listens on IPv4's loopback itself and on IPv6's beside it, on the same port, so that a
@@ -131,12 +161,15 @@ class Site(ThreadingHTTPServer):
       port: The port to listen on, or 0 for any free one on both.
       places: Every workspace on this machine, and the runs held for each as this follows them.
       runs: The runs written down, of every workspace.
+      notices: What happened to the runs worth telling somebody about.
     """
 
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, port: int, *, places: Places, runs: Runs) -> None:
+    def __init__(
+        self, port: int, *, places: Places, runs: Runs, notices: Notices
+    ) -> None:
         self._beside: _Beside | None = None
         for left in reversed(range(_PORTS)):
             super().__init__(("127.0.0.1", port), _Handler)
@@ -152,6 +185,11 @@ class Site(ThreadingHTTPServer):
         self.places = places
         self.hmz: Any = places.hmz
         self.runs = runs
+        self.notices = notices
+        #: The daemons on other machines, as each is reached, once `listening` has them.
+        self.remotes: Remotes | None = None
+        #: Every daemon's notices, as this interface tells them, once it is listening.
+        self.notifications: Notifications | None = None
         #: Set as the server stops, which is what ends every stream it is sending.
         self.going = threading.Event()
         self._key = secrets.token_urlsafe(32)
@@ -204,7 +242,7 @@ class Site(ThreadingHTTPServer):
             self._beside.server_close()
 
 
-class _Beside(ThreadingHTTPServer):
+class _Beside(_Bound):
     """IPv6's loopback, answered as the site it stands beside answers IPv4's.
 
     Args:
@@ -282,8 +320,13 @@ class _Handler(BaseHTTPRequestHandler):
             raise Refusal(
                 "Open the address hmz web printed, on the machine it runs on.", 403
             )
+        # This machine's own daemon, named as a page names every daemon it asks.
+        if path.startswith("/d/local/api/"):
+            path = path.removeprefix("/d/local")
         if path.startswith("/api/"):
             self._api(method, path, query)
+        elif path.startswith("/d/"):
+            self._daemon(method, path, query)
         elif method != "GET":
             raise Refusal("Only the page's own files are here.", 405)
         elif path == "/" and "key" in query:
@@ -352,13 +395,39 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self._ends(0)
 
-    def _api(self, method: str, path: str, query: dict[str, str]) -> None:
+    def _admits(self) -> None:
+        """Refuses a request to the API from a browser not let in, or from another page."""
         if not self._signed_in():
             raise Refusal(
                 "Open the address hmz web printed to let this browser in.", 401
             )
         if not self._asked_here():
             raise Refusal("Use this server's own page to make this request.", 403)
+
+    def _daemon(self, method: str, path: str, query: dict[str, str]) -> None:
+        """The API of a daemon by name, `/d/<name>/api/...`.
+
+        This machine's own for `local`, and otherwise asked of the interface on the machine
+        it names.
+        """
+        name, _, rest = path.removeprefix("/d/").partition("/")
+        rest = f"/{rest}"
+        if not name or not set(name) <= _DAEMON or not rest.startswith("/api/"):
+            raise Refusal("There is nothing here by that name.", 404)
+        if name == "local":
+            self._api(method, rest, query)
+            return
+        self._admits()
+        if method == "POST" and not self._from_its_page():
+            raise Refusal("Use this server's own page to make this request.", 403)
+        if self.site.remotes is None:
+            raise Refusal("There is no daemon by that name.", 404)
+        port, said = self.site.remotes.asks(name)
+        asked = urllib.parse.urlsplit(self.path).query
+        proxy.forwards(self, port, said, method, rest + (f"?{asked}" if asked else ""))
+
+    def _api(self, method: str, path: str, query: dict[str, str]) -> None:
+        self._admits()
         for route in ROUTES:
             matched = route.match(method, path)
             if matched is None:
@@ -529,6 +598,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _streams(self, answer: Stream, query: dict[str, str]) -> None:
         """Server-sent events, for as long as the browser listens and the server is up."""
         last = self.headers.get("Last-Event-ID") or query.get("last", "")
+        # Where it starts from is settled before the browser hears it is answered: what comes
+        # once it has heard so is never before the start.
+        events = answer.events(last, self.site.going)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -539,7 +611,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         self.wfile.write(b"retry: 2000\n\n")
         self.wfile.flush()
-        for said in answer.events(last, self.site.going):
+        for said in events:
             if said is None:
                 self.wfile.write(b": quiet\n\n")
             else:

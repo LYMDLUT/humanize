@@ -1,14 +1,17 @@
 // The sidebar, as Codex and Claude keep theirs: a new epic, finding one, the flows, and every
 // workspace of this machine as a folder of its epics, newest first -- each epic opened out into
-// its agents, and each agent into the sessions it opened. Under them, the machine, how many
-// epics are going on it, and a menu of the settings and what the epics spent.
+// its agents, and each agent into the sessions it opened. Under them, the daemon the page is of,
+// how many epics are going on it, and a picker of the daemons beside the settings and what the
+// epics spent.
 
-import { address, get, poll, post, refresh } from './api.js'
+import * as api from './api.js'
+import { address, daemon, get, hash, poll, post, refresh, scoped } from './api.js'
 import { ask } from './held.js'
 import { pick } from './importing.js'
 import { copy, menuOn, toast } from './ui.js'
 import { ago, fill, flowName, h, headline, icon, iconButton, when } from './dom.js'
 import { sessionsOf } from './epic.js'
+import { bell } from './notifications.js'
 import { nameOf } from './places.js'
 import { choice, dragged, keep, kept, menu, section, settleSidebar, toggleSidebar } from './shell.js'
 
@@ -26,7 +29,6 @@ const MARKS = { running: '●', stopping: '◐', done: '✔', failed: '✕', sto
 export function mountSidebar(root, context, where) {
   const list = h('nav', { class: 'side-runs', 'aria-label': 'Epics', 'data-hmz': 'epics' }, h('p', { class: 'side-quiet', role: 'status' }, 'Reading the epics…'))
   const more = h('button', { class: 'side-more', type: 'button', hidden: true }, 'Show more')
-  const state = h('span', { class: 'side-state', 'data-hmz': 'state' })
   // How many installed flows have a newer release, as the indexes were fetched as it started.
   const updates = h('span', { class: 'side-badge', 'data-hmz': 'updates', hidden: true })
   poll('/api/flowverses', 60000, (answer) => {
@@ -35,44 +37,27 @@ export function mountSidebar(root, context, where) {
     updates.textContent = String(count)
     updates.title = count ? `${count} flow${count === 1 ? ' has' : 's have'} a newer release` : ''
   })
-  const account = h(
-    'button',
-    { class: 'side-account', type: 'button', 'data-hmz': 'machine-menu' },
-    h('span', { class: 'side-avatar', 'aria-hidden': 'true' }, (context.machine || 'h').slice(0, 1).toUpperCase()),
-    h('span', { class: 'side-account-text' }, h('b', {}, context.machine || 'This machine'), state),
-    // A newer release of humanize, as PyPI said when it was last asked.
-    context.newer ? h('span', { class: 'side-badge', 'data-hmz': 'newer', title: `hmz ${context.newer} is out` }, '↑') : null,
-  )
-  menu(
-    account,
-    (close) => [
-      context.newer ? choice({ label: 'Update', about: `hmz ${context.newer}`, glyph: 'up', act: () => copy('hmz update', 'Copied hmz update'), close }) : null,
-      choice({ label: 'Import', glyph: 'file', act: pick, close }),
-      choice({ label: 'Settings', glyph: 'gear', href: '#/settings/general', close }),
-      choice({ label: 'Usage', glyph: 'chart', href: '#/settings/usage', close }),
-      choice({ label: 'Download', glyph: 'download', href: '#/download', close }),
-    ],
-    { up: true, label: 'Machine' },
-  )
+  const bar = daemonBar(context)
   fill(
     root,
     dragged(
       h(
         'div',
         { class: 'side-top' },
-        h('a', { class: 'brand', href: '#/new', 'aria-label': 'humanize, a new epic' }, h('img', { src: '/mark.svg', alt: '', width: '24', height: '24' }), h('strong', {}, 'humanize')),
+        h('a', { class: 'brand', href: hash('/new'), 'aria-label': 'humanize, a new epic' }, h('img', { src: '/mark.svg', alt: '', width: '24', height: '24' }), h('strong', {}, 'humanize')),
+        bell(),
         iconButton('sidebar', 'Hide sidebar', { class: 'side-fold', onclick: () => toggleSidebar(false), 'aria-controls': 'sidebar' }),
       ),
     ),
     h(
       'div',
       { class: 'side-nav' },
-      h('a', { href: '#/new', 'data-nav': 'new' }, icon('new'), h('span', {}, 'New epic'), h('kbd', {}, '⇧⌘O')),
-      h('a', { href: '#/search', 'data-nav': 'search' }, icon('search'), h('span', {}, 'Search epics'), h('kbd', {}, '⌘K')),
-      h('a', { href: '#/flows', 'data-nav': 'flows' }, icon('flows'), h('span', {}, 'Flows'), updates),
+      h('a', { href: hash('/new'), 'data-nav': 'new' }, icon('new'), h('span', {}, 'New epic'), h('kbd', {}, '⇧⌘O')),
+      h('a', { href: hash('/search'), 'data-nav': 'search' }, icon('search'), h('span', {}, 'Search epics'), h('kbd', {}, '⌘K')),
+      h('a', { href: hash('/flows'), 'data-nav': 'flows' }, icon('flows'), h('span', {}, 'Flows'), updates),
     ),
     h('div', { class: 'side-scroll' }, list, more),
-    h('div', { class: 'side-foot' }, account),
+    h('div', { class: 'side-foot' }, bar.el),
   )
   // The band across its top, above the row.
   dragged(root, '')
@@ -122,7 +107,7 @@ export function mountSidebar(root, context, where) {
       else link.removeAttribute('aria-current')
     }
     const going = data.runs.filter((one) => one.held).length
-    fill(state, h('span', { class: ['dot', going && 'live'], 'aria-hidden': 'true' }), going ? `${going} live` : 'idle')
+    bar.going(going)
     // Every workspace offered, each with its epics: those going first, then the latest.
     const groups = new Map()
     for (const one of places ? places.workspaces : []) groups.set(one.path, { path: one.path, runs: [] })
@@ -149,20 +134,20 @@ export function mountSidebar(root, context, where) {
             { class: ['side-folder', chosen === group.path && 'current'] },
             toggle,
             h('span', { class: 'side-folder-name', title: group.path }, icon('folder'), h('span', { class: 'side-label' }, nameOf(group.path))),
-            iconButton('plus', `New epic in ${nameOf(group.path)}`, { class: 'side-add', onclick: () => (location.hash = `/new?workspace=${encodeURIComponent(group.path)}`) }),
+            iconButton('plus', `New epic in ${nameOf(group.path)}`, { class: 'side-add', onclick: () => (location.hash = hash(`/new?workspace=${encodeURIComponent(group.path)}`)) }),
           )
         const where = encodeURIComponent(group.path)
         menuOn(folder, () => [
           { head: group.path },
-          { label: 'New epic here', glyph: 'new', href: `#/new?workspace=${where}` },
-          { label: 'Flows here', glyph: 'flows', href: `#/flows?workspace=${where}` },
-          { label: 'Search here', glyph: 'search', href: `#/search?workspace=${where}` },
+          { label: 'New epic here', glyph: 'new', href: hash(`/new?workspace=${where}`) },
+          { label: 'Flows here', glyph: 'flows', href: hash(`/flows?workspace=${where}`) },
+          { label: 'Search here', glyph: 'search', href: hash(`/search?workspace=${where}`) },
           '-',
           { label: 'Copy path', glyph: 'copy', act: () => copy(group.path, 'Path copied') },
           { label: open ? 'Collapse' : 'Expand', glyph: 'chevron', act: () => toggle.click() },
           '-',
-          { label: 'Settings', glyph: 'gear', href: `#/settings/workspace?workspace=${where}` },
-          { label: 'Usage', glyph: 'chart', href: `#/settings/usage?workspace=${where}` },
+          { label: 'Settings', glyph: 'gear', href: hash(`/settings/workspace?workspace=${where}`) },
+          { label: 'Usage', glyph: 'chart', href: hash(`/settings/usage?workspace=${where}`) },
           group.runs.length ? null : { label: 'Forget', danger: true, act: () => forget(group.path) },
         ])
         return h(
@@ -185,7 +170,7 @@ export function mountSidebar(root, context, where) {
 
   function item(run, here, parts) {
     const shown = (opened.has(run.name) || run.name === here) && !folded.has(run.name)
-    const link = `#/epics/${encodeURIComponent(run.name)}`
+    const link = hash(`/epics/${encodeURIComponent(run.name)}`)
     const toggle = h('button', { class: 'side-toggle', type: 'button', 'aria-expanded': String(shown), 'aria-label': shown ? 'Collapse' : 'Expand' }, icon('chevron'))
     toggle.addEventListener('click', () => {
       if (shown) {
@@ -224,19 +209,21 @@ export function mountSidebar(root, context, where) {
     const stale = !read || read.how !== run.how || (run.held && Date.now() - read.at > 3000)
     if (stale && !(read && read.asking)) {
       details.set(run.name, { ...(read || {}), asking: true })
+      const of = daemon()
       get(`/api/runs/${encodeURIComponent(run.name)}`).then(
         (detail) => {
+          if (of !== daemon()) return
           details.set(run.name, { how: run.how, at: Date.now(), detail })
-          draw()
+          if (data) draw()
         },
-        () => details.set(run.name, { how: run.how, at: Date.now(), detail: null }),
+        () => of === daemon() && details.set(run.name, { how: run.how, at: Date.now(), detail: null }),
       )
     }
     const detail = read && read.detail
     const sessions = detail ? sessionsOf(detail) : []
     const agents = run.agents.map((one) => ({ role: one.role, runs: one.runs, sessions: sessions.filter((session) => session.role === one.role) }))
     if (!agents.length) return h('p', { class: 'side-quiet nested' }, 'No agents')
-    const base = `#/epics/${encodeURIComponent(run.name)}`
+    const base = hash(`/epics/${encodeURIComponent(run.name)}`)
     const logged = run.name === here && parts[2] === 'logs' && !parts[3]
     const mythed = run.name === here && parts[2] === 'exomyth'
     return h(
@@ -312,12 +299,25 @@ export function mountSidebar(root, context, where) {
   }
 
   watch()
-  window.addEventListener('hashchange', () => data && draw())
+  window.addEventListener('hashchange', () => {
+    // The links that stay go on to the daemon the address names, as it names it.
+    for (const link of root.querySelectorAll('.side-top .brand, .side-nav a')) link.setAttribute('href', hash(`/${link.dataset.nav || 'new'}`))
+    if (data) draw()
+  })
+  // Another daemon's epics and workspaces: nothing of the last one's is drawn until they are read.
+  window.addEventListener('hmz:daemon', () => {
+    data = null
+    places = null
+    limit = PAGE
+    details.clear()
+    fill(list, h('p', { class: 'side-quiet', role: 'status' }, 'Reading the epics…'))
+    watch()
+  })
 }
 
 /** What can be done to one epic, from wherever it is listed. */
 export function epicMenu(run) {
-  const base = `#/epics/${encodeURIComponent(run.name)}`
+  const base = hash(`/epics/${encodeURIComponent(run.name)}`)
   // Going, whether a host holds it or another process does -- `hmz exec`, say.
   const going = run.held || run.how === 'running'
   const resumes = run.resumable && !going && run.how !== 'done'
@@ -326,13 +326,13 @@ export function epicMenu(run) {
     { label: 'Open', glyph: 'open', href: base },
     { label: 'Open log', glyph: 'thread', href: `${base}/logs` },
     { label: 'Exomyth', glyph: 'chart', href: `${base}/exomyth` },
-    resumes ? { label: 'Resume', glyph: 'resume', href: `#/new?flow=${encodeURIComponent(run.flow)}&resume=${encodeURIComponent(run.name)}&workspace=${encodeURIComponent(run.workspace)}` } : null,
-    { label: 'New epic like it', glyph: 'new', href: `#/new?flow=${encodeURIComponent(run.flow)}&workspace=${encodeURIComponent(run.workspace)}` },
+    resumes ? { label: 'Resume', glyph: 'resume', href: hash(`/new?flow=${encodeURIComponent(run.flow)}&resume=${encodeURIComponent(run.name)}&workspace=${encodeURIComponent(run.workspace)}`) } : null,
+    { label: 'New epic like it', glyph: 'new', href: hash(`/new?flow=${encodeURIComponent(run.flow)}&workspace=${encodeURIComponent(run.workspace)}`) },
     '-',
     { label: 'Copy link', glyph: 'link', act: () => copy(`${location.origin}/${base}`, 'Link copied') },
     { label: 'Copy task', glyph: 'copy', act: () => copy(run.task, 'Task copied') },
     { label: 'Copy name', glyph: 'copy', act: () => copy(run.name, 'Name copied') },
-    going ? null : { label: 'Export', glyph: 'download', act: () => (location.href = `/api/runs/${encodeURIComponent(run.name)}/bundle`) },
+    going ? null : { label: 'Export', glyph: 'download', act: () => (location.href = scoped(`/api/runs/${encodeURIComponent(run.name)}/bundle`)) },
     { label: 'Upload', glyph: 'up', title: backedSaid(run.backed), act: () => upload(run.name) },
     run.held ? '-' : null,
     run.held ? { label: 'Stop', glyph: 'stop', danger: true, act: () => ask(run.workspace, 'stop').then(() => toast('Stopping'), (error) => toast(error.message)) } : null,
@@ -349,6 +349,121 @@ export function backedSaid(backed) {
   return Object.entries(backed || {})
     .map(([name, one]) => `${name}: ${one.ok ? 'uploaded' : `failed, ${one.error}`} ${when(one.at)}`)
     .join(' · ')
+}
+
+/** How a daemon stands, as its dot says it, and the word for it where it is not up. */
+const STATES = { up: 'up', connecting: 'connecting', installing: 'installing', failed: 'failed', idle: 'not connected' }
+
+/** The daemon the page is of: the address's `@<name>`, or Local without one. */
+function current() {
+  if (api.daemon) return api.daemon()
+  let first = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]
+  try {
+    first = decodeURIComponent(first)
+  } catch {
+    // Not an address's own escaping: read as it is.
+  }
+  return first.startsWith('@') && first.length > 1 ? first.slice(1) : 'local'
+}
+
+/** Moves the page to another daemon, a new epic on it. */
+function switchTo(name) {
+  if (api.toDaemon) return api.toDaemon(name)
+  location.hash = `/@${encodeURIComponent(name)}/new`
+  // Where the page does not tell of a switch itself, it is told here.
+  if (!api.onDaemon) window.dispatchEvent(new CustomEvent('hmz:daemon', { detail: { name } }))
+}
+
+/** What a daemon is called on the page. */
+function named(name) {
+  return name === 'local' ? 'Local' : name
+}
+
+/**
+ * The foot of the sidebar: the daemon the page is of -- its name, its host, how it stands and
+ * how many epics are going on it -- opening a picker of every daemon and the machine's choices.
+ */
+function daemonBar(context) {
+  const local = { name: 'local', host: context.machine || '', state: 'up' }
+  let daemons = [local]
+  // How many epics are going, and on which daemon they were counted.
+  let live = { of: '', count: 0 }
+  const avatar = h('span', { class: 'side-avatar', 'aria-hidden': 'true' })
+  const title = h('b', { 'data-hmz': 'daemon-name' })
+  const host = h('span', { class: 'side-host', 'data-hmz': 'daemon-host' })
+  const state = h('span', { class: 'side-state', 'data-hmz': 'state' })
+  const el = h(
+    'button',
+    { class: 'side-account', type: 'button', 'data-hmz': 'daemon-bar' },
+    avatar,
+    h('span', { class: 'side-account-text' }, h('span', { class: 'side-daemon' }, title, host), state),
+    // A newer release of humanize, as PyPI said when it was last asked.
+    context.newer ? h('span', { class: 'side-badge', 'data-hmz': 'newer', title: `hmz ${context.newer} is out` }, '↑') : null,
+  )
+  const entry = () => daemons.find((one) => one.name === current()) || { name: current(), host: '', state: 'idle' }
+  const said = (one) => (Object.hasOwn(STATES, one.state) ? one.state : 'idle')
+  const draw = () => {
+    const one = entry()
+    const how = said(one)
+    const up = how === 'up'
+    avatar.textContent = named(one.name).slice(0, 1).toUpperCase()
+    title.textContent = named(one.name)
+    host.textContent = one.host || ''
+    el.title = [named(one.name), one.host, one.detail].filter(Boolean).join(' · ')
+    el.dataset.state = how
+    const going = live.of === one.name ? live.count : 0
+    fill(state, h('span', { class: ['dot', `daemon-${how}`, up && going && 'live'], 'aria-hidden': 'true' }), up ? (going ? `${going} live` : 'idle') : STATES[how])
+  }
+  // Every daemon, as the machine serving the page has them; Local alone where it keeps none.
+  poll('/api/daemons', 10000, (answer, error) => {
+    const listed = Array.isArray(answer) ? answer : answer && answer.daemons
+    if (Array.isArray(listed)) daemons = listed.some((one) => one.name === 'local') ? listed : [local, ...listed]
+    else if (error && error.status === 404) daemons = [local]
+    draw()
+  })
+  const connect = (name) => {
+    post(`/api/daemons/${encodeURIComponent(name)}/connect`, {}).then(() => {
+      toast(`Connecting ${named(name)}`)
+      refresh('/api/daemons')
+    }, (error) => toast(error.message))
+  }
+  menu(
+    el,
+    (close) => [
+      section('Daemons'),
+      daemons.flatMap((one) => [
+        choice({ label: named(one.name), about: [one.host, STATES[said(one)]].filter(Boolean).join(' · '), chosen: one.name === current(), act: () => {
+            settleSidebar()
+            if (one.name !== current()) switchTo(one.name)
+          }, close }),
+        said(one) === 'failed' ? choice({ label: 'Connect', about: named(one.name), glyph: 'resume', act: () => connect(one.name), close }) : null,
+      ]),
+      choice({ label: 'Manage', glyph: 'sliders', href: hash('/settings/daemons'), close }),
+      section('Machine'),
+      context.newer ? choice({ label: 'Update', about: `hmz ${context.newer}`, glyph: 'up', act: () => copy('hmz update', 'Copied hmz update'), close }) : null,
+      choice({ label: 'Import', glyph: 'file', act: pick, close }),
+      choice({ label: 'Settings', glyph: 'gear', href: hash('/settings/general'), close }),
+      choice({ label: 'Usage', glyph: 'chart', href: hash('/settings/usage'), close }),
+      choice({ label: 'Download', glyph: 'download', href: hash('/download'), close }),
+    ],
+    { up: true, label: 'Daemon' },
+  )
+  // The picker is what opened after it, once the menu has put it there.
+  el.addEventListener('click', () => {
+    const pop = el.nextElementSibling
+    if (pop && pop.matches('.popover')) pop.dataset.hmz = 'daemon-picker'
+  })
+  addEventListener('hashchange', draw)
+  addEventListener('hmz:daemon', draw)
+  draw()
+  return {
+    el,
+    /** Says how many epics are going on the daemon the page is of. */
+    going(count) {
+      live = { of: current(), count }
+      draw()
+    },
+  }
 }
 
 /** Forgets a workspace nothing ran in, which takes it out of the list. */

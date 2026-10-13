@@ -3,7 +3,7 @@
 // runs as, a model that account runs and an effort that model takes; an environment is a
 // backend, the runtime of it, and a directory there. Each comes to what `-a` or `-e` spells.
 
-import { get, post } from './api.js'
+import { daemon, get, hash, onDaemon, post } from './api.js'
 import { fill, h, iconButton } from './dom.js'
 import { pathPicker } from './paths.js'
 
@@ -17,13 +17,28 @@ const failed = new Map()
 
 /** Reads the CLIs installed again -- as a workspace runs them -- and tells every picker. */
 let reading = ''
+/** Whose CLIs they are: '' for the daemon the page is on, else `/d/<name>`, as Settings picks. */
+let base = ''
 
-export async function readBackends(workspace = reading) {
+export async function readBackends(workspace = reading, from = '') {
   reading = workspace
-  backends = await get(`/api/backends?workspace=${encodeURIComponent(workspace)}`)
+  base = from
+  const of = daemon()
+  const read = await get(`${from}/api/backends?workspace=${encodeURIComponent(workspace)}`)
+  // Read of a daemon the page has since left: another's CLIs.
+  if (of !== daemon()) return read
+  backends = read
   for (const one of told) one()
   return backends
 }
+
+// Another daemon's CLIs and accounts are others.
+onDaemon(() => {
+  backends = null
+  reading = ''
+  asking.clear()
+  failed.clear()
+})
 
 /** Asks a CLI what it runs as an account, once however many pickers ask. */
 function ask(cli, account) {
@@ -31,12 +46,12 @@ function ask(cli, account) {
   if (!asking.has(key)) {
     asking.set(
       key,
-      post('/api/accounts/models', { cli, name: account })
+      post(`${base}/api/accounts/models`, { cli, name: account })
         .then(() => failed.delete(key))
         .catch((error) => failed.set(key, error.message))
         .finally(() => {
           asking.delete(key)
-          return readBackends()
+          return readBackends(reading, base)
         }),
     )
   }
@@ -151,7 +166,7 @@ export function agentPicker(role, kept, changed, { effort: withEffort = true } =
   account.addEventListener('change', () => {
     if (account.value === '+') {
       account.value = chosen.account
-      location.hash = '/settings/accounts'
+      location.hash = hash('/settings/accounts')
       return
     }
     Object.assign(chosen, { account: account.value, model: '', effort: '' })
@@ -249,7 +264,7 @@ export function envPicker(role, kept, offered, runtimes) {
   })
   machine.addEventListener('change', () => {
     if (machine.value === '+') {
-      location.hash = '/settings/runtimes'
+      location.hash = hash('/settings/runtimes')
       draw()
       return
     }
