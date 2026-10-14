@@ -274,7 +274,11 @@ answers a **new** session of the call's agent of the same role, whose first `run
 copy on as a [fork](#fork): from where it stood when written, whatever the original session
 did afterwards. This holds in the run that wrote it and in every run [picking it
 up](#a-flow-that-can-be-picked-up), so one kept session can be carried on by several later
-runs, each a run of its own.
+runs, each a run of its own. A session whose turns work on another machine is kept and carried
+on the same way while its CLI runs here (harness `local`), [supervised](/reference/remote-execution#supervised-the-default)
+in a mirror of that machine's work; one whose CLI runs on another machine (harness `env` or a
+harness runtime) keeps its conversation there, and is refused as below. So is a harness that forks only in place, where that mirror
+is apart from the work: a container's or a job's, named for it, unlike an ssh host's.
 
 ```python
 session = await coder.spawn()
@@ -297,14 +301,15 @@ Refused by the write, with `StateNotSerializable` and nothing written down:
 | an [outworlder](#outworlder)'s | `an outworlder's session cannot be kept in a flow's state` |
 | its harness does not fork (`cursor-agent`, `mcode`, `agy`, `dsh`) | `<role>: <harness> cannot fork a session` (worded by the CLI's driver) |
 | its harness keeps conversations as database rows (`opencode`, `mimo`) | `<role>: …` (the conversation cannot be found as files) |
-| its last turn ran on another machine | `<role>: <harness> keeps a conversation on another machine, not here` |
+| its last turn's CLI ran on another machine: the machine's own, or under a harness put elsewhere | `<role>: <harness> keeps a conversation on another machine, not here` |
 
 Refused by the read-back session's first `run`, before the CLI starts or anything is copied:
 
 | Condition | Raises |
 | --- | --- |
 | the role's agent is now another harness | `UnsupportedOperation`: `<harness> cannot carry on a conversation <harness> kept` |
-| the turn's `env` is on another machine | `UnsupportedOperation`: `<harness> cannot carry a kept conversation onto another machine` |
+| the turn's `env` is on another machine and its CLI would run there: the machine's own, or under a harness put elsewhere | `UnsupportedOperation`: `<harness> cannot carry a kept conversation onto another machine its CLI runs on` |
+| the turn's `env` is a container or a job (`docker`, `swarm`, `slurm`, `apple-container`), its CLI run here in a mirror apart from the work, on a harness that forks only in place | `UnsupportedOperation`: `<harness> cannot carry a kept conversation into a mirror of another machine's work` |
 | the copy is gone (its epic deleted) | `SessionError`: `the session cannot be forked: <harness>: no conversation <id> under <dir>` |
 | the run already holds a different copy of the conversation | `SessionError`: `the session cannot be forked: <harness>: another copy of conversation <id> is kept at <path> already, which carrying this one on would replace` |
 | a harness that forks only in place, given another workdir than the conversation was had in | refused by the CLI |
@@ -369,7 +374,7 @@ class Agent(Protocol):
 | Class attribute | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `_permission` | `Permission` | `Permission()` | What the role's sessions may touch; they run under exactly this. See [Permissions](#what-each-agent-may-do). |
-| `_skills` | `tuple[str, ...]` | `()` | Skills mounted into the role's sessions. See [Skills](#the-skills-a-flow-brings). |
+| `_skills` | `tuple[str, ...]` | `()` | Skills given to the role's sessions. See [Skills](#the-skills-a-flow-brings). |
 | `_tools` | `tuple[FakeTool, ...]` | `()` | The flow's functions the role's sessions offer the agent as tools; needs `FakeToolAgentMixin`. See [Fake tools](#fake-tools). |
 | `_clis` | `tuple[FakeCli, ...]` | `()` | The flow's command lines the role's sessions put on the agent's PATH; any harness but `litellm`. See [Fake command lines](#fake-clis). |
 
@@ -456,8 +461,8 @@ as the flow; the turn waits for it. A `str` it returns is what the agent reads, 
 `done`, anything else JSON. What it raises is answered to the agent as the tool failing; the
 turn and the flow go on. `derive` keeps a view's tools; a flow handed the agent offers its own
 role's. Served where the harness's row below has Fake tools (not `acp`: its protocol is a
-plain `Agent`, which serves no mixin), where the CLI runs on this machine; a turn of one run
-natively on another is refused. On `grok`, a turn only `grok -p` can take (an `output_schema`,
+plain `Agent`, which serves no mixin), where the CLI runs on this machine (harness `local`); a
+turn of one whose harness is `env` or a harness runtime is refused. On `grok`, a turn only `grok -p` can take (an `output_schema`,
 a fork's first turn, web search off, a rung that takes tools away) is refused with
 `HarnessUnrecoverable` while tools are offered. See
 [A tool of the flow's own](/weaver/tools#fake-tools).
@@ -947,9 +952,9 @@ The result classes are `<Moment>HookResult`, the params `<Moment>HookParams` (e.
   CLI is started, which apply from the next turn: `on_pre_tool_use` on a gating CLI, and
   `on_permission_request` or `on_ask_user` on Codex (whose app server is restarted between
   turns for it) and Kimi Code.
-- A session whose CLI starts (its first turn, or a turn that carries it elsewhere) while any
-  of `on_pre_tool_use`, `on_permission_request`, `on_ask_user` is hung keeps its harness on
-  this machine where its runtime has no affinity; see
+- A session whose CLI starts (its first turn, or a turn that carries it elsewhere) on
+  another machine while `on_pre_tool_use` or `on_permission_request` is hung is refused where
+  its runtime's harness is `env`, the CLI there being one these hooks cannot gate; see
   [Harness placement](#harness-placement).
 
 ### `HookKind` {#hookkind}
@@ -1602,8 +1607,9 @@ class Reviewer(Agent):
   the existing copy.
 - The flow's own skill wins a name also held by a repository; a `#<skill>` URL whose skill
   the flow has of its own gives the role the flow's.
-- Skills are mounted where the harness reads a project's skills for the session's lifetime,
-  then removed. Nothing is installed. A harness that reads no project skills carries none.
+- Skills are lodged at the harness's user level, in the [virtual home](/reference/agents#virtual-homes)
+  each of its processes is started in, or named in its configuration (`opencode`, `mimo`);
+  never in the workspace. Nothing is installed. A harness with neither carries none.
 - [`derive(skills=…)`](#derive) narrows them for part of a flow.
 
 ## Flowverses {#flowverses}
@@ -1785,7 +1791,7 @@ Read [Security](/user/security) before running any.
 
 ```sh
 hmz exec -f <flow> [-a <role>=<spec>[,…]]… [-e <role>=<spec>[,…]]… [-p <key>=<value>[,…]]…
-         [--profile] [--resume] [--json] <task>
+         [--profile-flow] [--profile-environment] [--resume] [--json] <task>
 ```
 
 `-a`, `-e` and `-p` may each be repeated; every occurrence is a comma list. A comma
@@ -1909,47 +1915,50 @@ most once across all `-p`, among the flow's params or apart from them:
 
 <span id="h-harness"></span>Where each agent's **harness** (its CLI and the process
 supervising it) runs, relative to the machine its environment's work is on. Not said on the
-command line: it is the `affinity` of the saved [runtime](/reference/machines#runtimes) the
-work is on, an ordered list whose next entry is tried only where the one before has no room.
+command line: a session has an **env location**, `local` where its work is here and
+`standalone` elsewhere, and a **harness location**, which for standalone work is the
+`harness` setting of the saved [runtime](/reference/machines#runtimes) the work is on, one
+value and nowhere else.
 
 | Work | Harness |
 | --- | --- |
-| here | here |
-| on a machine nobody saved, or a runtime with no affinity | on the environment's machine, natively, if all hold: no `on_pre_tool_use`/`on_permission_request` hook hung when the session opens (an `on_ask_user` hook does not keep it here); the CLI is on that machine's `PATH`; for a fenced session, that machine can hold the fence. Otherwise here, anchored to the machine. |
-| on a runtime with an affinity | the first entry with room: `local` here, anchored to the machine (always room); `self` natively on the machine (no room where the CLI is missing or the fence cannot be held); `ssh:<name>`, `docker:<name>`, `swarm:<name>`, `apple-container:<name>` or `slurm:<name>` on that runtime, acting on the work through the anchor (no room where it cannot be opened or reached, has no share left, or the role's permission is anything but every scope `ALL`) |
+| here (env location `local`) | here (harness location `local`) |
+| elsewhere, harness `env` (the default; also a machine nobody saved) | on the environment's machine, natively. Refused where the CLI is not on that machine's `PATH`, where a fenced session's fence cannot be held there, where the machine cannot be asked, or where an `on_pre_tool_use`/`on_permission_request` hook is hung when the session opens (an `on_ask_user` hook is not) |
+| elsewhere, harness `local` | here, anchored to the machine, in a mirror of its work |
+| elsewhere, harness `ssh:<name>`, `docker:<name>`, `swarm:<name>`, `apple-container:<name>` or `slurm:<name>` (harness location `standalone`) | on that runtime, in a mirror there, acting on the work through the anchor. Refused where it cannot be opened or reached, has no share left, or the role's permission is anything but every scope `ALL` |
 
-The affinity is the one of the runtime actually opened for the work; a runtime a harness is
+The setting is the one of the runtime actually opened for the work; a runtime a harness is
 put on is opened as an environment of its own (its workdir, else `~` over ssh, else
 `$TMPDIR/humanize-<uid>/harness` for a daemon here), probed before the flow is called and closed with
-the run, and its own affinity is never walked.
+the run, and its own setting is never read.
 
 A session's harness is placed as its first turn starts, for the machine that turn's `env` is
 on, and placed again where a later turn carries the session to another workdir.
 
-**Probing.** Placement is settled once per agent role and machine. "The CLI is there" is
+**Probing.** It is settled once per agent role and machine. "The CLI is there" is
 asked by running `/bin/sh -c 'command -v -- "$1" || command -v -- "$2" || exit 69'` with the
-CLI's program and its basename down the same connection a native turn uses (300 s limit;
-stopped with the run). Whether the machine can hold a fence is asked once per kind of fence
-(network cut or not) in the anchor handshake.
+CLI's program and its basename down the same connection a turn on the environment's machine
+uses (300 s limit; stopped with the run). Whether the machine can hold a fence is asked once
+per kind of fence (network cut or not) in the anchor handshake.
 
-| Condition | Refusal an entry is passed by with |
+| Condition | Refusal |
 | --- | --- |
-| a runtime entry, role not granted everything | `HarnessSandboxed`: `<role>=<spec>: <AgentClass>: a fence cannot hold a harness that runs on another machine` |
-| a runtime entry that cannot be opened, reached or given a container | the runtime's `EnvUnavailable`, `EnvConnectionError` or `ResourceUnmet` |
-| `self`: CLI missing | `HarnessNotInstalled`: `<cli> is not installed on <backend>[@<provider>]: <install hint> there, or put local in the affinity of the runtime it is on` |
-| `self`: fence not holdable | `HarnessSandboxed`: `<backend>[@<provider>] cannot fence the agent to its permission: it needs Landlock; grant the agent everything, or put local in the affinity of the runtime it is on` |
+| a harness runtime, role not granted everything | `HarnessSandboxed`: `<role>=<spec>: <AgentClass>: a fence cannot hold a harness that runs on another machine` |
+| a harness runtime that cannot be opened, reached or given a container | the runtime's `EnvUnavailable`, `EnvConnectionError` or `ResourceUnmet` |
+| `env`: CLI missing | `HarnessNotInstalled`: `<cli> is not installed on <backend>[@<provider>]: <install hint> there, or set the harness of the runtime it is on to local` |
+| `env`: fence not holdable | `HarnessSandboxed`: `<backend>[@<provider>] cannot fence the agent to its permission: it needs Landlock; grant the agent everything, or set the harness of the runtime it is on to local` |
+| `env`: machine did not answer | `HarnessUnrecoverable`: `<backend>[@<provider>] did not say within 300s whether <cli> is there`, or `could not be asked whether <cli> is there: <reason>` |
+| `env`: gating hook hung | `UnsupportedOperation`: `a pre_tool_use[ and a …] hook cannot gate the tools of a CLI on another machine; set the harness of the runtime it is on to local` |
 
-Where no entry has room, the last refusal is raised, of its type, as `<backend>[@<provider>]:
-nowhere its affinity (<entries>) names has room for <cli>'s harness; the last: <refusal>`. A
-machine that did not answer under `self` raises `HarnessUnrecoverable` (`<backend>[@<provider>]
-did not say within 300s whether <cli> is there`, or `could not be asked whether <cli> is
-there: <reason>`) rather than being passed by. Every affinity is walked for every agent
-against every environment (the workspace included) once the environments are probed, before
-the flow is called, so a run refuses as a line to correct rather than failing at a session; a
-session started later (a callee's, under a narrower permission) is still refused as its first
-turn starts.
-Where each session's harness went is recorded in the epic (`opened.harness`: `local`, `self`,
-`<backend>:<name>`), for sessions whose work was on another machine.
+Each refusal is raised, of its type, as `<backend>[@<provider>]: <cli>'s harness cannot run
+where its harness setting (<setting>) says: <refusal>`; the harness is never put anywhere
+else. Every agent is settled against every environment (the workspace included) once the
+environments are probed, before the flow is called, so a run refuses as a line to correct
+rather than failing at a session; a session started later (a callee's, under a narrower
+permission) is still refused as its first turn starts.
+Where each session's harness went is recorded in the epic (`opened.harness`: `local`, `env`,
+`<backend>:<name>`; `self` from an earlier humanize is read as `env`), for sessions whose work
+was on another machine.
 
 ### Command-line refusals {#command-line-refusals}
 
@@ -2050,7 +2059,7 @@ FlowException
 | <code id="harnessunrecoverable">HarnessUnrecoverable</code> | `HarnessError` | any other failure no retry would change; a CLI that cannot be configured as asked |
 | <code id="outputschemaerror">OutputSchemaError</code> | `HarnessError`, `ValueError` | the answer is not the `output_schema` |
 | <code id="sessionerror">SessionError</code> | `HarnessError` | a session is closed, another agent's, busy, not taking a turn to steer, interrupted, not forkable yet, or its prompt was blocked by a hook |
-| <code id="unsupportedoperation">UnsupportedOperation</code> | `HarnessError` | the harness cannot do this at all (fork; fork elsewhere; outworlder fork or steer) |
+| <code id="unsupportedoperation">UnsupportedOperation</code> | `HarnessError` | the harness cannot do this at all (fork; fork elsewhere; carry a kept session on where its CLI cannot read it; outworlder fork or steer); any `NotImplementedError` from a turn |
 | <code id="enverror">EnvError</code> | `FlowException` | an environment could not do what it was asked |
 | <code id="envunavailable">EnvUnavailable</code> | `EnvError` | the machine is gone or the workdir does not exist |
 | <code id="envconnectionerror">EnvConnectionError</code> | `EnvError`, `ConnectionError` | the connection to a remote environment failed |

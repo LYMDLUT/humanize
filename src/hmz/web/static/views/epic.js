@@ -1,19 +1,22 @@
 // One epic: the run going, as it happens, or one written down. `#/runs/<name>` draws it as a
 // graph of its agents and who handed to whom; `/agents/<agent>` is the graph with that agent
 // picked out; `/sessions/<key>` is one session's thread, as a chat is read; `/exomyth` is its
-// timeline, drawn by views/exomyth. `#/live` is whichever run is going -- a chat's opened on its
-// conversation rather than its graph. Under the view, while the run goes, are the questions it
-// waits on a person for and the box that says a line to it; beside it, a panel of what it is
-// and was --
-// its figures, its budget, how it was set up, the flows it called -- with its board, its people
-// and the side questions asked beside it.
+// timeline, drawn by views/exomyth. `#/live` is whichever run is going on a host: a workspace's
+// own, or a chat's by its `slot`. A chat is only its conversation, as a chat app draws one:
+// never a graph, its agents or a way to stop it -- and one folded away is carried on by saying
+// something in it, on a host of its own, with what was said before it still above. Under
+// the view, while the run goes, are the questions it waits on a person for and the box that
+// says a line to it; beside it, a panel of what it is and was -- its figures, its budget, how it
+// was set up, the flows it called -- with its board, its people and the side questions asked
+// beside it.
 
 import { asides, board, outworlders, question, saying } from '../acting.js'
 import { get, hash, scoped } from '../api.js'
 import { go } from '../app.js'
 import { acting, ago, badge, flowName, pathText, confirming, copier, empty, fill, h, headline, icon, lasting, problem, secondsOf, when } from '../dom.js'
 import { ask } from '../held.js'
-import { live, read as markRead, sessionsOf, took, watch, written } from '../epic.js'
+import { composer as composed } from '../composer.js'
+import { chatState, chatting, live, read as markRead, sessionsOf, took, watch, written } from '../epic.js'
 import { graph } from '../graph.js'
 import { bar, dragged, keep, kept, sidePanel, tabbed } from '../shell.js'
 import { backedSaid, epicMenu, upload } from '../sidebar.js'
@@ -26,8 +29,8 @@ const LINES = 3000
 export function mount(root, { parts, query }) {
   if (parts[0] === 'epics' && parts[2] === 'exomyth') return exomyth(root, parts[1], query)
   let name = parts[0] === 'live' ? '' : parts[1]
-  /** Where the epic going is looked for, for an epic not named. */
-  const wanted = query.get('workspace') || ''
+  /** Which host the epic going is looked for on, for an epic not named. */
+  const wanted = { workspace: query.get('workspace') || '', slot: query.get('slot') || '' }
   let mode = modeOf(parts)
   const panel = sidePanel('the epic')
   const head = h('div', { class: 'bar-holder' })
@@ -43,7 +46,20 @@ export function mount(root, { parts, query }) {
   let sayTo = null
   let sayToKey = ''
   let btw = null
-  const workspace = () => (seen && seen.workspace) || wanted
+  const workspace = () => (seen && seen.workspace) || wanted.workspace
+  /** The host the page follows, as what is asked of the epic going is asked of it. */
+  const here = {
+    get workspace() {
+      return workspace()
+    },
+    get slot() {
+      return (held() && held().slot) || ''
+    },
+  }
+  /** The box that carries a chat folded away on, once there is one to carry on. */
+  let carry = null
+  /** Whether a line said in that box is carrying the chat on, until it is followed going. */
+  let carryingOn = false
   /** The card of each question waiting, kept while it waits as it was asked of whom it was. */
   const cards = new Map()
   let seen = null
@@ -51,8 +67,6 @@ export function mount(root, { parts, query }) {
   let tracing = false
   let traceError = null
   let tab = 'epic'
-  /** Whether the epic going was a chat not named when this was opened, to be opened on its conversation once it has one. */
-  let landing = false
   const drawn = {}
 
   /** Draws one part again, where what it is drawn from has changed. */
@@ -92,45 +106,47 @@ export function mount(root, { parts, query }) {
       // The run going is named now: the address says which, and it is followed by name.
       name = detail.name
       history.replaceState(null, '', hash(`/epics/${encodeURIComponent(name)}`))
-      landing = chatting(detail)
       stop()
-      stop = watch(name, detail.workspace, told)
+      stop = watch(name, { workspace: detail.workspace, slot: wanted.slot }, told)
       return
     }
     if (!say) {
-      say = saying(detail.workspace)
+      say = saying(here)
       btw = asides(detail.workspace, detail.name)
     }
     const run = going && going.started ? going : null
-    const opened = landing && run && run.records.find((one) => one.type === 'opened' && !one.person)
-    if (opened) {
-      // A chat is a conversation, and is opened on it, as a chat app opens on one.
-      landing = false
-      history.replaceState(null, '', hash(`/epics/${encodeURIComponent(name)}/sessions/${encodeURIComponent(opened.key)}`))
-      mode = modeOf(['epics', name, 'sessions', opened.key])
+    const chat = chatting(detail)
+    // A chat is its one conversation, and is opened on it wherever it is opened, as a chat app
+    // opens on one: the one going, or the last it opened, which a chat carried on goes on from.
+    const conversation = chat && (run ? run.records.find((one) => one.type === 'opened' && !one.person) : sessionsOf(detail).at(-1))
+    if (conversation && mode.session !== conversation.key) {
+      history.replaceState(null, '', hash(`/epics/${encodeURIComponent(name)}/sessions/${encodeURIComponent(conversation.key)}`))
+      mode = modeOf(['epics', name, 'sessions', conversation.key])
     }
     const model = run ? live(held, run, detail) : written(detail, traced)
     const agentOfSession = mode.session ? mode.session.split('/')[0] : mode.log || ''
     persons = new Set(model.agents.filter((one) => one.person).map((one) => one.name))
-    drawHead(detail, run)
-    if (reading(mode)) drawThread(detail, run)
+    drawHead(detail, run, chat)
+    if (chat || reading(mode)) drawThread(detail, run)
     else drawGraph(detail, run, model)
     drawDock(detail, run)
-    drawPanel(detail, run, model, mode.focus || agentOfSession)
+    drawPanel(detail, run, model, chat ? '' : mode.focus || agentOfSession, chat)
   }
 
   // ------------------------------------------------------------------ the bar
 
-  function drawHead(detail, run) {
+  function drawHead(detail, run, chat) {
     const going = Boolean(run && run.live)
-    const state = run ? (run.ended ? run.ended.how : run.state === 'stopping' ? 'stopping' : run.live ? 'running' : detail.how) : detail.how
+    const turn = going && held().standing.run ? held().standing.run.turn : ''
+    const state = chat ? chatState(going ? 'running' : detail.how, turn) : run ? (run.ended ? run.ended.how : run.state === 'stopping' ? 'stopping' : run.live ? 'running' : detail.how) : detail.how
     const spent = run && held().figures && held().figures.tally && held().figures.tally[1] ? held().figures.tally[1].split(' · ')[0] : detail.spent ? detail.spent.money : ''
     region('head', [mode, detail.name, detail.task, detail.flow, detail.picks_up, state, going, run && run.state, detail.backed], () => {
       const actions = []
-      if (going && run.state === 'running') actions.push(confirming({ label: 'Stop', ask: 'Stop this epic?', yes: 'Stop', no: 'Cancel', act: () => ask(workspace(), 'stop') }))
-      else if (going && run.state === 'stopping') actions.push(confirming({ label: 'Force stop', ask: 'Close every session now?', yes: 'Force stop', no: 'Cancel', act: () => ask(workspace(), 'force') }))
-      if (!going && detail.picks_up) actions.push(h('a', { class: 'btn', href: hash(`/new?flow=${encodeURIComponent(detail.flow)}&resume=${encodeURIComponent(detail.name)}`) }, icon('resume'), 'Resume'))
-      actions.push(h('a', { class: 'icon-btn', href: hash(`/epics/${encodeURIComponent(detail.name)}/exomyth`), 'aria-label': 'Exomyth', title: 'Exomyth', 'data-hmz': 'exomyth-open' }, icon('chart')))
+      // A chat is never stopped from its page: it is a conversation, as a chat app's.
+      if (!chat && going && run.state === 'running') actions.push(confirming({ label: 'Stop', ask: 'Stop this epic?', yes: 'Stop', no: 'Cancel', act: () => ask(here, 'stop') }))
+      else if (!chat && going && run.state === 'stopping') actions.push(confirming({ label: 'Force stop', ask: 'Close every session now?', yes: 'Force stop', no: 'Cancel', act: () => ask(here, 'force') }))
+      if (!going && detail.picks_up && !chat) actions.push(h('a', { class: 'btn', href: hash(`/new?flow=${encodeURIComponent(detail.flow)}&resume=${encodeURIComponent(detail.name)}`) }, icon('resume'), 'Resume'))
+      if (!chat) actions.push(h('a', { class: 'icon-btn', href: hash(`/epics/${encodeURIComponent(detail.name)}/exomyth`), 'aria-label': 'Exomyth', title: 'Exomyth', 'data-hmz': 'exomyth-open' }, icon('chart')))
       if (!going) actions.push(h('a', { class: 'icon-btn', href: scoped(`/api/runs/${encodeURIComponent(detail.name)}/bundle`), download: '', 'aria-label': 'Export', title: 'Export' }, icon('download')))
       // How each target last took it, said on hover; read again as the epic is.
       actions.push(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Upload', title: backedSaid(detail.backed) || 'Upload', 'data-hmz': 'upload', onclick: () => upload(detail.name) }, icon('up')))
@@ -143,8 +159,8 @@ export function mount(root, { parts, query }) {
         h('span', { title: when(detail.began) }, `began ${ago(detail.began)}`),
         h('span', { class: 'mono', 'data-hmz': 'clock' }),
       ]
-      const where = mode.session || (mode.log ? `${mode.log} log` : 'Log')
-      const title = reading(mode)
+      const where = mode.session || `${mode.log} log`
+      const title = reading(mode) && !chat
         ? h('span', { class: 'crumbs' }, h('a', { href: base }, headline(detail.task)), h('span', { 'aria-hidden': 'true' }, ' / '), h('span', { class: 'mono' }, where))
         : headline(detail.task)
       fill(head, bar({ title, sub, actions }))
@@ -216,7 +232,6 @@ export function mount(root, { parts, query }) {
   /** What the thread in front is the transcript of, as `sayer` takes it. */
   function threadKey() {
     if (mode.session) return mode.session
-    if (!mode.log) return ''
     return persons.has(mode.log) ? `person:${mode.log}` : `agent:${mode.log}`
   }
 
@@ -242,6 +257,15 @@ export function mount(root, { parts, query }) {
         fill(box)
         cut.hidden = true
       }
+      // A chat carried on: what was said before, read out of the last session it opened then,
+      // above what is said now.
+      const before = chat && detail.earlier ? sessionsOf(detail)[detail.earlier - 1] : null
+      if (before && !traced && !tracing && !traceError) readTrace()
+      region('thread-before', [saidFor, before && before.key, Boolean(traced)], () => {
+        box.querySelector(':scope > .thread-before')?.remove()
+        const read = before && traced && traced.find((each) => each.key === before.traced)
+        if (read && read.actions.length) box.prepend(h('div', { class: 'thread-before', 'data-hmz': 'thread-before' }, saidTraced({ ...read, label: before.key })))
+      })
       const stuck = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60
       let added = false
       for (const record of run.records) {
@@ -271,7 +295,7 @@ export function mount(root, { parts, query }) {
             'div',
             { class: 'thread-ask row', 'data-hmz': 'thread-ask' },
             asking.options.map((option, index) =>
-              acting(option, () => ask(workspace(), 'answer', { question: asking.question, text: String(index + 1) }), { kind: 'btn small', busy: 'Answering…' }),
+              acting(option, () => ask(here, 'answer', { question: asking.question, text: String(index + 1) }), { kind: 'btn small', busy: 'Answering…' }),
             ),
           ),
         )
@@ -285,8 +309,8 @@ export function mount(root, { parts, query }) {
     if (!traced && !tracing && !traceError) readTrace()
     region('thread', [key, Boolean(traced), tracing, String(traceError)], () => {
       saidFor = ''
-      // The sessions the thread is of: one, every one of an agent's, or every one.
-      const sessions = sessionsOf(detail).filter((one) => (mode.session ? one.key === key : !mode.log || one.agent === mode.log))
+      // The sessions the thread is of: one, or every one of an agent's.
+      const sessions = sessionsOf(detail).filter((one) => (mode.session ? one.key === key : one.agent === mode.log))
       const read = traced ? sessions.map((one) => ({ ...(traced.find((each) => each.key === one.traced) || { actions: [] }), label: one.key })).filter((one) => one.actions.length) : []
       fill(
         box,
@@ -320,7 +344,7 @@ export function mount(root, { parts, query }) {
       const kept = new Set()
       const shown = carded.map((one) => {
         const key = JSON.stringify([one.question, one.owner || '', me, one.text, one.options])
-        if (!cards.has(key)) cards.set(key, question(workspace(), one, me, clients))
+        if (!cards.has(key)) cards.set(key, question(here, one, me, clients))
         kept.add(key)
         return cards.get(key)
       })
@@ -340,12 +364,17 @@ export function mount(root, { parts, query }) {
       if (to && sayToKey !== to) {
         // A chat's line is said to its next turn, which is its one conversation's: the turn
         // open, or the next the person is asked to start.
-        sayTo = saying(workspace(), to, { asked: () => askedIn(to), to: chatting(detail) && mode.session ? '' : to })
+        sayTo = saying(here, to, { asked: () => askedIn(to), to: chatting(detail) && mode.session ? '' : to })
         sayToKey = to
       }
     }
-    const composer = going ? (reading(mode) && sayToKey && (mode.session || mode.log) ? sayTo.node : say.node) : null
-    region('dock-composer', [going, mode.session, mode.log, detail.picks_up, detail.foreign], () => {
+    // A chat folded away is carried on by saying something in it, as one going is.
+    // Until the host carrying it on is followed, what was said is on its way: no second box.
+    if (going) carryingOn = false
+    const carried = !going && chat && detail.picks_up && !detail.held && !carryingOn
+    if (carried && !carry) carry = carrying(detail)
+    const composer = going ? (reading(mode) && sayToKey ? sayTo.node : say.node) : carried ? carry : null
+    region('dock-composer', [going, carried, mode.session, mode.log, detail.picks_up, detail.foreign], () => {
       dock.querySelector('.composer, .dock-note')?.remove()
       if (composer) dock.append(composer)
       else if (detail.picks_up)
@@ -357,11 +386,12 @@ export function mount(root, { parts, query }) {
 
   // ------------------------------------------------------------------ the panel beside it
 
-  function drawPanel(detail, run, model, focus) {
+  function drawPanel(detail, run, model, focus, chat) {
     const going = Boolean(run && run.live)
     const standing = held() ? held().standing : {}
     const items = going && standing.board ? standing.board.items : null
-    const people = going ? run.started.outworlders || [] : []
+    // A chat's person is whoever is typing to it: nobody else to hand it to.
+    const people = going && !chat ? run.started.outworlders || [] : []
     const tabs = [['epic', 'Epic'], ['aside', 'Aside'], items ? ['board', 'Board'] : null, people.length ? ['people', 'People'] : null].filter(Boolean)
     if (!tabs.some(([key]) => key === tab)) tab = 'epic'
     region('panel-tabs', [tabs, tab], () => {
@@ -382,7 +412,7 @@ export function mount(root, { parts, query }) {
     if (tab === 'epic') {
       const figures = held() && held().figures
       region('panel-run', [model.agents, model.handovers, focus, going, detail, run && run.ended, figures && figures.tally, figures && figures.lasting, standing.usage, standing.calls, run && run.offset, Math.floor(Date.now() / 1000)], () =>
-        fill(pane, overview(detail, run, model, focus, going, figures, standing)),
+        fill(pane, overview(detail, run, model, focus, going, figures, standing, chat)),
       )
     } else if (tab === 'aside') {
       const opened = model.agents.flatMap((one) => one.sessions.map((session) => session.key))
@@ -393,16 +423,16 @@ export function mount(root, { parts, query }) {
         fill(pane, h('p', { class: 'dim' }, 'Side questions never reach the epic.'), btw.node)
       })
     } else if (tab === 'board') {
-      region('panel-board', [items], () => fill(pane, board(workspace(), items || [])))
+      region('panel-board', [items], () => fill(pane, board(here, items || [])))
     } else if (tab === 'people') {
       const clients = standing.clients && standing.clients.clients
       region('panel-people', [people, standing.claims, standing.away, held().me, clients], () =>
-        fill(pane, outworlders(workspace(), people, { claims: (standing.claims && standing.claims.claims) || {}, away: standing.away, me: held().me, clients })),
+        fill(pane, outworlders(here, people, { claims: (standing.claims && standing.claims.claims) || {}, away: standing.away, me: held().me, clients })),
       )
     }
   }
 
-  function overview(detail, run, model, focus, going, figures, standing) {
+  function overview(detail, run, model, focus, going, figures, standing, chat) {
     const agent = model.agents.find((one) => one.name === focus)
     const base = hash(`/epics/${encodeURIComponent(detail.name)}`)
     const parts = []
@@ -442,7 +472,8 @@ export function mount(root, { parts, query }) {
       )
     }
     parts.push(section('Task', detail.task.length > 400 ? h('details', {}, h('summary', {}, detail.task.slice(0, 240), '…'), h('pre', { class: 'block' }, detail.task)) : h('p', { class: 'prose' }, detail.task)))
-    parts.push(
+    // One agent, in one session, hands to nobody and calls no flow.
+    if (!chat) parts.push(
       section(
         'Handovers',
         model.handovers.length
@@ -459,10 +490,10 @@ export function mount(root, { parts, query }) {
       parts.push(section('Frontends', h('ul', { class: 'links', 'data-hmz': 'frontends' }, clients.map((one) => h('li', {}, h('b', {}, one.name || one.client), h('span', { class: 'dim' }, ` ${one.kind}${one.client === me ? ' · this page' : ''}`))))))
     }
     const calls = (standing.calls && standing.calls.calls) || []
-    if (run && calls.length) {
+    if (!chat && run && calls.length) {
       const offset = run.offset
       parts.push(section('Running flows', h('ul', { class: 'tree' }, calls.map((call) => h('li', { style: { marginLeft: `${call.depth * 14}px` } }, h('b', {}, call.name), ' ', h('span', { class: 'dim' }, offset === null ? '' : lasting(Date.now() / 1000 - (call.since + offset))))))))
-    } else if (detail.calls.length) {
+    } else if (!chat && detail.calls.length) {
       parts.push(section('Called flows', tree(detail.calls)))
     }
     parts.push(section('Setup', facts(detail)))
@@ -493,6 +524,27 @@ export function mount(root, { parts, query }) {
     return seen && seen.held
   }
 
+  /**
+   * The box a chat folded away is carried on in: what is said in it starts the chat again on a
+   * host of its own, going on in this epic with the agent it had, and the page follows that host.
+   */
+  function carrying(detail) {
+    const box = composed({
+      placeholder: 'Message',
+      label: 'What to say',
+      submit: async (text) => {
+        const agents = Object.fromEntries(detail.agents.map((one) => [one.role, one.runs]))
+        const started = await ask(detail.workspace, 'start', { flow: detail.flow, task: text, agents, resume: detail.at })
+        carry = null
+        carryingOn = true
+        stop()
+        stop = watch(name, { workspace: detail.workspace, slot: started.slot }, told)
+      },
+    })
+    box.node.dataset.hmz = 'say'
+    return box.node
+  }
+
   function told(now) {
     seen = now
     draw()
@@ -513,7 +565,6 @@ export function mount(root, { parts, query }) {
     /** Moves to another part of the same run without drawing it all again. */
     moved({ parts: next }) {
       if (next[0] !== 'epics' || !name || next[1] !== name || next[2] === 'exomyth') return false
-      landing = false
       mode = modeOf(next)
       for (const one of ['head', 'panel-run', 'dock-composer']) drawn[one] = undefined
       draw()
@@ -547,24 +598,18 @@ function exomyth(root, name, query) {
   }
 }
 
-/** Whether an epic is the built-in chat, read as a conversation rather than as a flow. */
-function chatting(epic) {
-  return flowName(epic.flow) === 'chat'
-}
-
 function modeOf(parts) {
   return {
     session: parts[2] === 'sessions' ? parts[3] || '' : '',
     focus: parts[2] === 'agents' ? parts[3] || '' : '',
-    // A log: every agent's and person's lines, "" -- or one agent's, by its name, or one
-    // person's, by the role they answer.
-    log: parts[2] === 'logs' ? parts[3] || '' : null,
+    // A log: one agent's lines, by its name, or one person's, by the role they answer.
+    log: parts[2] === 'logs' ? parts[3] || '' : '',
   }
 }
 
 /** Whether a view of an epic is a thread to read rather than its graph. */
 function reading(mode) {
-  return Boolean(mode.session) || mode.log !== null
+  return Boolean(mode.session || mode.log)
 }
 
 /**
@@ -700,7 +745,9 @@ function facts(detail) {
     h('dt', {}, 'sessions'),
     h('dd', {}, detail.sessions.length ? sessionsOf(detail).map((one) => h('div', {}, h('span', { class: 'mono' }, one.key), ` · ${one.backend}`, one.provider ? `@${one.provider}` : '', h('div', { class: 'dim mono' }, one.ident))) : 'none'),
     detail.picked_up ? [h('dt', {}, 'resumed from'), h('dd', {}, h('a', { href: hash(`/epics/${encodeURIComponent(detail.picked_up)}`) }, detail.picked_up))] : null,
-    detail.profile ? [h('dt', {}, 'profiled'), h('dd', {}, 'yes')] : null,
+    detail.profile_flow || detail.profile_environment
+      ? [h('dt', {}, 'profiled'), h('dd', {}, [detail.profile_flow && 'flow', detail.profile_environment && 'environment'].filter(Boolean).join(' · '))]
+      : null,
   )
 }
 

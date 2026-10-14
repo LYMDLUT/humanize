@@ -101,7 +101,7 @@ Before Textual is imported, `hmz` sets `TEXTUAL_DISABLE_KITTY_KEY=1` in its own 
 | --- | --- | --- |
 | The interface closed normally | — | `0` |
 | This machine's runs are held by an older humanize (daemon `protocol` not `2`), or this directory's by a host one left | `hmz: the runs on this machine are held by an older humanize (pid <n>); stop it with that version`, or `the runs in <dir> …` | `1` |
-| The host let go of the interface ([`gone`](/reference/daemon#gone)) | `hmz: <why>` (or `hmz: disconnected from the runs`), printed as the interface closes | `1` |
+| The host let go of the interface ([`gone`](/reference/daemon#gone)) | `hmz: <why>` (or `hmz: disconnected from the epics`), printed as the interface closes | `1` |
 | No host could be linked in 3 tries | `hmz: runs cannot be detached from the terminal (<OSError>), so they will run in this process instead` | the interface's |
 
 ## `hmz exec` {#hmz-exec}
@@ -111,7 +111,8 @@ with no interface. The run's [outworlder](#nobody-is-at-the-prompt) is always aw
 
 ```text
 usage: hmz exec [-h] -f FLOW [-a ROLE=SPEC[,...]] [-e ROLE=SPEC[,...]]
-                [-p KEY=VALUE[,...]] [--profile] [--resume] [--json]
+                [-p KEY=VALUE[,...]] [--profile-flow] [--profile-environment]
+                [--resume] [--json]
                 [--backup NAME]
                 task
 ```
@@ -124,7 +125,8 @@ usage: hmz exec [-h] -f FLOW [-a ROLE=SPEC[,...]] [-e ROLE=SPEC[,...]]
 | <span id="exec-agents"></span>`-a`, `--agents` | [`<agent>`](#writing-an-agent) list | 0‥n, merged | none | One agent per agent role. |
 | <span id="exec-envs"></span>`-e`, `--envs` | [`<env>`](#writing-an-environment) list | 0‥n, merged | none | One environment per environment role. |
 | <span id="exec-params"></span>`-p`, `--params` | [`<param>`](#writing-params) list | 0‥n, merged | the flow's defaults | Fields of the flow's `FlowParams`, and, as [`budget.<limit>`](#writing-a-budget), what the run may spend: **required** except for `chat`. |
-| <span id="exec-profile"></span>`--profile` | flag | 0‥1 | off | [Profile](/reference/tracing#profiling-a-run) the programs the run's agents start, as well as tracing them. |
+| <span id="exec-profile"></span>`--profile-flow` | flag | 0‥1 | off | [Profile](/reference/tracing#profiling-a-run) the flow's own Python, as well as tracing the run. |
+| `--profile-environment` | flag | 0‥1 | off | [Profile](/reference/tracing#profiling-a-run) the programs the run's agents start, as well as tracing them. |
 | <span id="exec-resume"></span>`--resume` | flag | 0‥1 | off | [Pick up](#picking-a-run-up) the newest run of this flow here. |
 | <span id="exec-json"></span>`--json` | flag | 0‥1 | off | Write the run as [NDJSON](#ndjson) on stdout. |
 | <span id="exec-backup"></span>`--backup` | a [backup target](/reference/settings#backup) name, or `none` | 0‥n, merged | `backup.defaults` | Where the epic is [backed up](/user/backups); `none` anywhere: nowhere. A name settings has none of exits `2`. Once the run has said how it went, `hmz exec` waits up to 60 s for the epic's backups, saying `hmz exec: backing the epic up` on stderr, and says where it left one. |
@@ -325,19 +327,20 @@ hmz exec: nobody lists a price for <model>[, <model>…], so cost=<n> cannot sto
 ### Where the harness runs {#choosing-where-the-harness-runs}
 
 The *harness* is an agent's CLI and its supervisor. Nothing on the line says where it runs:
-no option of `hmz exec` takes it. Work on this machine has its harness here; work
-on a saved [runtime](/reference/machines#runtimes) has it where that runtime's `affinity` says,
-in order (`self` on the runtime's own machine, `local` here, `ssh:<name>`, `docker:<name>`,
-`swarm:<name>`, `apple-container:<name>` or `slurm:<name>` on another saved runtime); work on a machine nobody saved, or on a runtime with no affinity, has it
-on the environment's machine where the agent's CLI is installed there and can be fenced to the
-role's permission and no hook gating its tools is hung, and here otherwise.
+no option of `hmz exec` takes it. Work on this machine (env location `local`) has its
+harness here; work on another machine (env location `standalone`) has it where the `harness`
+setting of the saved [runtime](/reference/machines#runtimes) it is on says, and nowhere else:
+`env` (the default, and the setting of a machine nobody saved) on the environment's machine,
+natively; `local` here; `ssh:<name>`, `docker:<name>`, `swarm:<name>`, `apple-container:<name>`
+or `slurm:<name>` on another saved runtime.
 
 Once the environments are probed, before the flow is called, every agent's harness is settled
-on every machine whose runtime has an affinity; an affinity with no room for it refuses the run
-(`hmz exec: error: <backend>[@<provider>]: nowhere its affinity (<entries>) names has room
-for <cli>'s harness; the last: <refusal>`, exit `2`). A runtime an affinity sends a harness to is
-opened as an environment is, probed before the flow is called and closed with the run. Where
-each session's harness went is recorded on the session in the epic as `local`, `self` or
+on every machine; a setting that cannot hold it (the CLI missing there, a fence it cannot
+hold, a hook gating the agent's tools under `env`, a harness runtime that cannot be reached)
+refuses the run (`hmz exec: error: <backend>[@<provider>]: <cli>'s harness cannot run where
+its harness setting (<setting>) says: <refusal>`, exit `2`). A runtime a harness setting names
+is opened as an environment is, probed before the flow is called and closed with the run. Where
+each session's harness went is recorded on the session in the epic as `local`, `env` or
 `<backend>:<name>` ([Tracing › Epics](/reference/tracing#epics)), and in the daemon's
 [`opened`](/reference/daemon#history-records) record. Detail:
 [Remote execution › Where the harness runs](/reference/remote-execution#where-the-harness-runs).
@@ -363,7 +366,7 @@ the epic it `picked_up`. Without `--resume` every run starts from the top.
 | 1. argparse | Options, `-f` and `task` present. | Usage on stderr, `hmz exec: error: <why>`, exit `2`. |
 | 2. Spec parsing (`Hmz.read`) | Every `-a`, `-e`, `-p` against its grammar, and every `-e` provider against the runtimes saved; duplicate roles and keys. | Same as 1. |
 | 3. Loading (`Hmz.run` → `Runner`) | Flow resolves and loads; roles, harness kinds, capabilities, effort ladders, params, budget presence, `--resume`. | `hmz exec: error: <why>` (no usage), exit `2`. |
-| 4. Opening (`Run.run`, before the flow is called) | Environments reached and measured; each agent's harness settled where its runtime's affinity puts it, and the runtimes it goes to reached; skills fetched. | `hmz exec: error: <why>`, exit `2`. |
+| 4. Opening (`Run.run`, before the flow is called) | Environments reached and measured; each agent's harness settled where its runtime's harness setting puts it, and the runtimes it goes to reached; skills fetched. | `hmz exec: error: <why>`, exit `2`. |
 | 5. The flow | — | See [Exit statuses](#exit-statuses). |
 
 Nothing of an agent has started before stage 5. What a flow module does when imported (stage
@@ -414,7 +417,7 @@ Stage 1–2 messages are preceded by the usage block.
 | no `budget.*`, any flow but `chat` | `<flow> requires a budget: specify with -p budget.cost=...,budget.duration=...,budget.output_tokens=...` |
 | `--resume` | see [Picking a run up](#picking-a-run-up) |
 | an environment unreachable or smaller than declared | the reason, naming the role |
-| a harness with no room anywhere its runtime's affinity names | see [Where the harness runs](#choosing-where-the-harness-runs) |
+| a harness that cannot run where its runtime's harness setting says | see [Where the harness runs](#choosing-where-the-harness-runs) |
 | a skill a role names that cannot be found or fetched | the reason, naming the skill |
 
 ### Output {#watching-a-run}
@@ -591,7 +594,7 @@ interface](/reference/tui) in a line as it opens, the [web interface](/reference
 | --- | --- | --- |
 | Already the newest release | stdout `hmz <version> is the newest release`; nothing is run | `0` |
 | Updated | stdout `Updating hmz <old> to <new>: <line>`, the installer's own output, `Updated hmz to <new>` | `0` |
-| Installed from a checkout or a URL (`direct_url.json`) | stderr `hmz update: hmz was installed from <url>, not PyPI; update it there` | `1` |
+| Installed from a checkout or a URL (`direct_url.json`) | stderr `hmz update: hmz was installed from <url>, not PyPI; update it there`, the URL without its user, password, query or fragment | `1` |
 | The installer is not on `PATH` | stderr `hmz update: <uv\|pipx> installed hmz but is not on PATH` | `1` |
 | PyPI did not answer, or `HUMANIZE_RELEASES=off` | stderr `hmz update: PyPI could not be asked for the newest release` | `1` |
 | The installer failed | stderr `hmz update: <installer> exited <status>` | `1` |
@@ -660,7 +663,7 @@ its own arguments. Loads `coganchor` and nothing else of humanize. Semantics:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--target URL` | `$HUMANIZE_TARGET`, else `local` | `ssh://HOST`, `docker://CONTAINER[@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT`, or `local[:DIR]`. |
+| `--target URL` | `$HUMANIZE_TARGET`, else `local` | `ssh://HOST`, `docker://CONTAINER[?OPTIONS][@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT`, or `local[:DIR]`. |
 | `--harness WHERE` | `$HUMANIZE_HARNESS`, else `local` | Where the agent process and its supervisor run: `local`, `same` (wherever `--target` is), or a target spelling. |
 | `--broker HOST` | `$HUMANIZE_RENDEZVOUS`, else this machine's outward-facing address | Where the two halves dial to be introduced, when harness and target differ. |
 | `--workspace PATH` | the current directory | The project directory as it exists on the target. |
@@ -679,7 +682,6 @@ its own arguments. Loads `coganchor` and nothing else of humanize. Semantics:
 | `--native` | off | Run the CLI installed on the target instead of supervising one here. |
 | `--hush NAME` | — | With `--native`, unset this variable for the CLI on the target. Repeatable. |
 | `--project NAME=DIR` | — | With `--native`, put this credentials directory on the target for the session and set `NAME` to it. Repeatable. |
-| `--carry DIR=PATH` | — | With `--native`, put this directory into the target's workspace at `PATH` for the turn. Repeatable. |
 | `--bring NAME/PATH=DIR` | — | With `--native`, copy what the turn wrote at `PATH` (may be a glob) inside the directory `--project` set `NAME` to back into `DIR`, at the same place, before that directory is removed. Repeatable. |
 | `--tell DIR` | — | With `--native`, keep a file of `NAME=PATH` lines in `DIR` on this machine while the turn runs, one per `--project` that landed at `PATH` on the target. |
 | `--installs LINE` | — | With `--native`, the install line to report where the target lacks the CLI. |
@@ -902,7 +904,7 @@ Every command is a shell around [`hmz.sdk.Hmz`](/reference/sdk#hmz):
 | --- | --- |
 | `hmz exec <argv>` | [`Hmz().exec(argv)`](/reference/sdk#hmz-exec) |
 | reading an `hmz exec` line | [`Hmz().read(argv)`](/reference/sdk#hmz-read) → `Line` |
-| `hmz exec` without the line | [`Hmz().run(flow, task, agents=…, envs=…, params=…, budget=…, profile=…, resume=…)`](/reference/sdk#hmz-run) |
+| `hmz exec` without the line | [`Hmz().run(flow, task, agents=…, envs=…, params=…, budget=…, profile_flow=…, profile_environment=…, resume=…)`](/reference/sdk#hmz-run) |
 | `hmz` (as a frontend of held runs) | [`Daemons().host().link()`](/reference/sdk#daemons) |
 
 `hmz web` is a frontend of held runs as `hmz` is; in Python it is `hmz.web.serve()`, which is

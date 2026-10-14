@@ -12,7 +12,10 @@ it holds, the driver, a process -- with nothing real behind it:
 - told something starting with `ask`, it stops to ask `Which colour?`, offering `red` and
   `blue`, and answers `picked <the answer>`;
 - a word put into a turn under way is acknowledged as Claude acknowledges one;
-- every turn costs 1,000 input tokens and 200 output tokens.
+- every turn costs 1,000 input tokens and 200 output tokens;
+- what it is told is kept as a conversation where Claude Code keeps one, under
+  `$CLAUDE_CONFIG_DIR/projects/`, and one resumed with `--fork-session` is copied to a new one --
+  which is what lets a chat be kept as it stopped and carried on.
 
 Every time it starts it writes its arguments down, and everything it is told, under `.stand-in/`
 in the directory it was started in (:func:`started`, :func:`heard`), so that a test can say
@@ -25,16 +28,20 @@ screen (:func:`screen`) or a file the interface wrote.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import html
 import json
 import os
 import re
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from textual.widgets import OptionList
 
+from hmz.flows.builtin import chat
 from hmz.tui import Humanize
 from hmz.tui.dropdown import Dropdown
 from hmz.tui.flows import Flows
@@ -42,9 +49,9 @@ from hmz.tui.pick import Configures, Confirms
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     import pytest
+    from textual.app import App
     from textual.pilot import Pilot
 
 #: The model the stand-in says it runs.
@@ -52,6 +59,18 @@ MODEL = "claude-stand-in"
 
 #: What an interface opened on the stand-in is set up to run, as its status line says it.
 RUNS = f"claude/{MODEL}:high"
+
+
+def _talks() -> str:
+    """`chat`, reached through a link called `talk`: the conversation, under another name."""
+    at = Path(tempfile.mkdtemp(prefix="hmz-talk-")) / "talk"
+    at.symlink_to(Path(chat.__file__).parent, target_is_directory=True)
+    return str(at)
+
+
+#: `chat`, named by a link to its directory rather than as `chat`: the same conversation, which
+#: the interface then reads as any flow -- a monitor, views to step round, a run to stop.
+TALKS = _talks()
 
 #: The terminal every pilot runs in.
 SIZE = (100, 40)
@@ -67,7 +86,7 @@ _TEXT = re.compile(r'<text[^>]*? x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]*)</text>')
 _CELL = 12.2
 
 _STAND_IN = """
-import json, os, sys
+import json, os, re, shutil, sys, uuid
 
 def log(name, said):
     try:
@@ -83,6 +102,12 @@ def say(**said):
 log("started.jsonl", sys.argv[1:])
 flags = dict(zip(sys.argv, sys.argv[1:]))
 said = flags.get("--session-id") or flags.get("--resume") or "stand-in"
+home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+projects = os.path.join(home, "projects", re.sub(r"[^a-zA-Z0-9]", "-", os.getcwd()))
+if "--resume" in flags and "--fork-session" in sys.argv:
+    said = str(uuid.uuid4())
+    shutil.copy(os.path.join(projects, flags["--resume"] + ".jsonl"),
+                os.path.join(projects, said + ".jsonl"))
 say(type="system", subtype="init", session_id=said, model=flags.get("--model", ""))
 held, turns = [], 0
 for line in sys.stdin:
@@ -110,6 +135,10 @@ for line in sys.stdin:
         continue
     text = message["message"]["content"][0]["text"]
     log("heard.jsonl", text)
+    os.makedirs(projects, exist_ok=True)
+    with open(os.path.join(projects, said + ".jsonl"), "a") as kept:
+        kept.write(json.dumps({"type": "user", "sessionId": said,
+                               "message": {"role": "user", "content": text}}) + "\\n")
     if message.get("uuid"):
         say(type="command_lifecycle", state="started", command_uuid=message["uuid"])
     lines = [one.strip() for one in text.splitlines() if one.strip()]
@@ -168,6 +197,71 @@ async def writes(task: str, *, agents: Agents, envs: Envs, params: FlowParams,
 OWN = "@local/writes"
 
 
+def claude_logged(home: Path, workspace: Path, ident: str, began: float) -> None:
+    """Writes one session as Claude Code logs one: a prompt, a thought, a tool, an answer.
+
+    Args:
+      home: Claude Code's home, which the stand-in is given as `CLAUDE_CONFIG_DIR`.
+      workspace: Where the session worked.
+      ident: The session's id.
+      began: When it began, in seconds since the epoch.
+    """
+
+    def at(offset: float) -> str:
+        return datetime.datetime.fromtimestamp(began + offset, datetime.UTC).isoformat()
+
+    def assistant(
+        offset: float, request: str, *blocks: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "type": "assistant",
+            "timestamp": at(offset),
+            "requestId": request,
+            "message": {
+                "model": "claude-x",
+                "usage": {"input_tokens": 1000, "output_tokens": 200},
+                "content": list(blocks),
+            },
+        }
+
+    folder = "".join(one if one.isalnum() else "-" for one in str(workspace))
+    rows = [
+        {
+            "type": "user",
+            "timestamp": at(0),
+            "promptId": "p1",
+            "cwd": str(workspace),
+            "sessionId": ident,
+            "message": {"content": "fix the bug"},
+        },
+        assistant(2, "r1", {"type": "thinking", "thinking": "hmm"}),
+        assistant(
+            3,
+            "r1",
+            {
+                "type": "tool_use",
+                "id": "t1",
+                "name": "Bash",
+                "input": {"command": "pytest"},
+            },
+        ),
+        {
+            "type": "user",
+            "timestamp": at(6),
+            "promptId": "p1",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+                ]
+            },
+        },
+        assistant(8, "r2", {"type": "text", "text": "fixed"}),
+    ]
+    log = home / "projects" / folder / f"{ident}.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("".join(json.dumps(one) + "\n" for one in rows))
+
+
 def stand_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Puts the stand-in `claude` alone on `PATH`, and works in a directory of the test's own.
 
@@ -187,11 +281,18 @@ def stand_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return _workspace(tmp_path, monkeypatch)
 
 
-def own_flow(workspace: Path) -> None:
-    """Puts :data:`WRITES` among the workspace's own flows."""
+def folds_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Folds a chat nobody reads away half a second after its turn, rather than a minute."""
+    from hmz.runtime.doing import hosting
+
+    monkeypatch.setattr(hosting, "FOLD", 0.5)
+
+
+def own_flow(workspace: Path, source: str = WRITES) -> None:
+    """Puts :data:`WRITES`, or another flow under its name, among the workspace's own flows."""
     flow = workspace / ".hmz" / "flows" / "writes"
     flow.mkdir(parents=True)
-    (flow / "__init__.py").write_text(WRITES)
+    (flow / "__init__.py").write_text(source)
 
 
 async def set_up_own_flow(pilot: Pilot[None]) -> None:
@@ -200,7 +301,7 @@ async def set_up_own_flow(pilot: Pilot[None]) -> None:
     await typed(pilot, "/flow")
     await on(pilot, Flows)
     await opens(pilot, OWN)
-    await shows(pilot, trail("Installed", OWN), "a run needs one")
+    await shows(pilot, trail("Installed", OWN), "an epic needs one")
     await opens(pilot, "\x1ebudget")
     await on(pilot, Configures)
     await opens(pilot, "cost")
@@ -264,7 +365,7 @@ def trail(*steps: str) -> str:
     return " \N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} ".join(steps)
 
 
-def screen(app: Humanize) -> str:
+def screen(app: App[Any]) -> str:
     """Everything on the screen now, as plain text, one terminal row per line."""
     lines: dict[float, dict[int, str]] = {}
     for x, y, said in _TEXT.findall(app.export_screenshot()):

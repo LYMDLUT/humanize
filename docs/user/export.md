@@ -11,8 +11,9 @@ timeline of the run and what each CLI was, with every credential struck out.
 
 ## Try it
 
-Open `/epics`, press <kbd>enter</kbd> on the run, choose **export run**, and type where the
-archive goes.
+Open `/epics`, press <kbd>enter</kbd> on the run, choose **export epic**, and type where the
+archive goes -- or press **done** as it stands, and it goes to `~/Downloads/` (your home, where
+there is no `Downloads`), as a browser's export would.
 
 <HmzCast name="epics" alt="/epics listing the runs of this directory, newest first; enter on one shows where it is written down and offers to resume it or export it; export it reports where the archive landed, how big it is, and what the trace inside it holds" />
 
@@ -56,13 +57,13 @@ budget. Open the run in `/epics`:
   It stopped with 1 agent in 3 sessions.                                        ③
 
   ╭──────────────────────────────────────────────────────────────────────────╮
-  │ export run                the entire run as an archive, with its trace   │
+  │ export epic               the entire epic as an archive, with its trace  │
   ╰──────────────────────────────────────────────────────────────────────────╯
 
   enter choose   esc back
 ```
 
-Choose **export run**. A form asks where the archive goes: a file, or a directory to put it
+Choose **export epic**. A form asks where the archive goes: a file, or a directory to put it
 in under the run's name (made if it is not there yet). The path completes as you type, the way
 a shell completes one: what it could become is listed under the form, <kbd>tab</kbd> finishes
 as much as those share and then steps through them, and `~` is your home. Here `iss`,
@@ -101,7 +102,8 @@ A moment later the list of runs is back, with a line under it:
 ├── epic.jsonl               <span class="d">what happened, a line at a time</span>
 ├── epic.&lt;flow&gt;_&lt;id&gt;.jsonl   <span class="d">the same, for each flow it called</span>
 ├── resume.jsonl             <span class="d">for a flow that can be picked up</span>
-├── profile.jsonl            <span class="d">for a profiled run</span>
+├── profile.jsonl            <span class="d">for a run whose environment was profiled</span>
+├── flow-profile.jsonl       <span class="d">for a run whose flow was profiled</span>
 ├── traces/
 │   └── export.trace.json    <span class="d">the whole run as one timeline</span>
 └── sessions/
@@ -110,7 +112,7 @@ A moment later the list of runs is back, with a line under it:
 </Term>
 
 A file the run never wrote is left out: `resume.jsonl` only for a flow that
-[can be picked up](/user/resuming), `profile.jsonl` only for a
+[can be picked up](/user/resuming), `profile.jsonl` and `flow-profile.jsonl` only for a
 [profiled](/user/tracing#profiling-a-run) run.
 
 **`manifest.json`** is what lets somebody else read the rest:
@@ -259,8 +261,9 @@ runs.bundled(epic, output="/tmp/for-the-issue.hmzepic")
 ### Importing a run
 
 Somebody sent you a `.hmzepic`? Read it back in, and it is a run like any other. In `hmz`,
-open `/epics`, press `i` (or **Import…**) and give the file; the list shows it with the cursor
-on it, turning to this machine's epics when it ran in another directory. From a script:
+open `/epics`, press `i` (or **Import…**) and give the file -- type it, press <kbd>tab</kbd> to
+take each file in `~/Downloads/` in turn, or drop it onto the terminal, which pastes its path;
+the list shows it with the cursor on it, turning to this machine's epics when it ran in another directory. From a script:
 
 ```python
 from hmz.sdk import Hmz

@@ -31,11 +31,11 @@ Values are read with `os.environ`; `hmz` changes its own environment in one case
 | <code id="humanize-watchdog">HUMANIZE_WATCHDOG</code> | a number of seconds (`float`); `<= 0` disables; a value that is not a number is ignored | per CLI: 900 s; `dsh` 360 s | Seconds a turn may be silent before the watchdog acts on it. Overrides every CLI's own value. |
 | <code id="humanize-prices">HUMANIZE_PRICES</code> | a URL (contains `://`) or a file path; `""`, `off`, `0`, `no`, `none` (case-insensitive) disable fetching | `https://openllmprices.com/data/prices.json` | Where the price table used for [budgets](/reference/flows#budget) and the [tally](/user/tally) is refreshed from (at most once per 24 h, by the interface and by every run), into `$TMPDIR/humanize-<uid>/prices.json`. |
 | <code id="humanize-releases">HUMANIZE_RELEASES</code> | a URL (contains `://`) or a file path; `""`, `off`, `0`, `no`, `none` (case-insensitive) disable asking | `https://pypi.org/pypi/hmz/json` | Where the newest release of `hmz` is asked for: by [`hmz update`](/reference/cli#hmz-update), and, at most once per 24 h, by the interfaces as they open, into `$TMPDIR/humanize-<uid>/releases.json`. |
-| <code id="humanize-shadows">HUMANIZE_SHADOWS</code> | a path (`~` expanded); empty is unset | `~/.cache/humanize/shadows` | Directory of mirror records (`<sha16>.json`) for this process and its children. |
+| <code id="humanize-shadows">HUMANIZE_SHADOWS</code> | a path (`~` expanded); empty is unset | `~/.cache/humanize/shadows` | Directory of mirror records (`<sha16>.json`) and journals (`<sha16>.journal`, `<sha16>.live`) for this process and its children. |
 | <code id="humanize-ssh-reuse">HUMANIZE_SSH_REUSE</code> | `off`, `0`, `no`, `false` (trimmed, case-insensitive) or set and empty turn it off; anything else on | on | On: every `ssh` humanize runs adds `-o ControlMaster=auto -o ControlPersist=120 -o ControlPath=<dir>/%C[-<digest>]`, `<dir>` being `$XDG_RUNTIME_DIR/humanize-ssh-<uid>` (or the temporary directory). Read once per process. |
 | <code id="humanize-rendezvous">HUMANIZE_RENDEZVOUS</code> | a host or address; empty is unset | the address this machine uses to reach the outside (UDP route to `192.0.2.1`), else `127.0.0.1` | Default of `hmz internal anchor --broker`, and the address an in-process rendezvous broker advertises. |
 | <code id="humanize-rendezvous-port">HUMANIZE_RENDEZVOUS_PORT</code> | an integer | `0` (any free port) | Port of the process's shared rendezvous broker (listening on `0.0.0.0`). A non-integer raises `ValueError`. |
-| <code id="humanize-target">HUMANIZE_TARGET</code> | `ssh://HOST`, `docker://CONTAINER[@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT`, `local[:DIR]` | `local` | Default of `hmz internal anchor --target`. Also set by humanize inside an anchored agent (below). |
+| <code id="humanize-target">HUMANIZE_TARGET</code> | `ssh://HOST`, `docker://CONTAINER[?OPTIONS][@ENDPOINT]`, `apple-container://CONTAINER`, `slurm://JOBID[?python=PATH]`, `tcp://HOST:PORT`, `peer://TICKET@HOST:PORT`, `local[:DIR]` | `local` | Default of `hmz internal anchor --target`. Also set by humanize inside an anchored agent (below). |
 | <code id="humanize-harness">HUMANIZE_HARNESS</code> | `local`, `same`, or a target spelling | `local` | Default of `hmz internal anchor --harness`. |
 | <code id="humanize-shadow">HUMANIZE_SHADOW</code> | a path | `--workspace` | Default of `hmz internal anchor --shadow`: the mirror directory on the machine the harness runs on. Set by humanize for a remote harness (below). |
 | <code id="humanize-token">HUMANIZE_TOKEN</code> | a string | none | Default of `--token` for `hmz internal anchor` (the secret a `tcp://` target expects) and `hmz internal anchor serve` (the secret clients must present; a mismatch is refused with `invalid token`). `serve --listen` on a non-loopback address without a token fails: `hmz: cannot listen on a non-loopback address without --token`. |
@@ -158,8 +158,9 @@ Aliases hushed together: `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_OAUTH_TOKEN`,
 `OPENAI_BASE_URL`/`OPENAI_API_BASE`, `XAI_API_KEY`/`GROK_CODE_XAI_API_KEY`.
 
 **Other variables read for a CLI.** `NODE_COMPILE_CACHE` (pi, qwen) and `NODE_OPTIONS`
-(appended to, never replaced) are respected if already set; `QWEN_CODE_SYSTEM_DEFAULTS_PATH`
-is read from the turn's environment to know which files to watch.
+(appended to, never replaced) are respected if already set; `QWEN_CODE_SYSTEM_SETTINGS_PATH` and
+`QWEN_CODE_SYSTEM_DEFAULTS_PATH` are read from the turn's environment to know which files to
+watch, and never set.
 
 ## Set for processes humanize starts
 
@@ -170,7 +171,7 @@ is read from the turn's environment to know which files to watch.
 | `HUMANIZE_WORKSPACE` | the same | the workspace as the target names it |
 | `PWD` | an anchored agent; every command run on a target | the working directory |
 | `TERM` | a command run on a target with a terminal | `xterm-256color` unless set |
-| `HUMANIZE_SHADOW` | `hmz internal anchor` started for a harness on another machine | its mirror: `$HOME/.cache/humanize-mirrors/<sha16>` on an `ssh` machine, `/tmp/humanize-mirrors/<sha16>` in a container |
+| `HUMANIZE_SHADOW` | `hmz internal anchor` started for a harness on another machine | its mirror: `$HOME/.cache/humanize-mirrors/<sha16>` on an `ssh` machine, `/tmp/humanize-mirrors/<sha16>` in a container (`/tmp/humanize-mirrors-<UID>/<sha16>` for a target naming `user=UID`) |
 | `HUMANIZE_TOKEN` | a local `hmz internal anchor serve --stdio` child | the token |
 | the account's `env` | every turn, sign-in and model listing under an account | from `providers/<cli>/<name>/provider.json` ([Files](/reference/files)); includes fixed values a sign-in way sets (e.g. `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION=us-east-1`) |
 | a CLI's home variable and `XDG_CONFIG_HOME` | a native turn on another machine under an account whose credential files live in the CLI's home | a per-session `mktemp -d` directory on the target holding copies of those files, removed after the turn |
@@ -178,7 +179,6 @@ is read from the turn's environment to know which files to watch.
 | `OPENCODE_PERMISSION`, `MIMOCODE_PERMISSION` | `opencode`/`mimo` turns with a rung, web switch or fence to express | a JSON permission table |
 | `MIMOCODE_DISABLE_CLAUDE_CODE` | `mimo` turns whose fence does not allow reading `~/.claude.json` | `1` |
 | `MIMO_GATEWAY_MODEL` | `mimo` turns under a gateway account | the turn's model, without a leading `humanize/` |
-| `QWEN_CODE_SYSTEM_SETTINGS_PATH` | every `qwen` turn | a per-session settings file |
 | `NODE_COMPILE_CACHE` | `pi`, `qwen` turns on this machine, unless already set | `$TMPDIR/humanize-<uid>/compiled/pi`, `…/compiled/qwen` |
 | `NODE_OPTIONS`, `HMZ_PRELOAD_AT` | `kimi`, `pi`, `qwen`, `mimo` turns on this machine with an `on_pre_tool_use` hook hung | `--require <preload>` appended; the preload's report socket (the preload sets `HMZ_PRELOAD_IN` itself and removes all three from programs the CLI starts) |
 | `DSH_HOME` | `dsh` turns | the kept directory |

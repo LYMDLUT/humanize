@@ -12,7 +12,7 @@ checked against that declaration and opened as a driver
 :func:`~hmz.runtime.flowing.environments.open_env`) -- which starts no CLI and reaches no
 machine; each environment given is probed, which does reach it -- moved down the fallback list
 of the runtime its `-e` named where that runtime cannot hold it --, and each agent's harness is
-settled on those machines, as the affinity of the runtime each is says; and then the flow is
+settled on those machines, as the harness setting of the runtime each is says; and then the flow is
 run by
 :func:`~hmz.runtime.flowing.engine.run_flow`, written down as it goes into an epic that also
 holds the engine's journal of a flow that can be picked up. What refuses a run before it has
@@ -52,8 +52,8 @@ if TYPE_CHECKING:
         OutworlderDriver,
         SessionHandle,
     )
-    from hmz.runtime.flowing.affinity import Harbors
     from hmz.runtime.flowing.declaring import EnvRole
+    from hmz.runtime.flowing.harbors import Harbors
     from hmz.runtime.flowing.harnesses import Listener
     from hmz.runtime.flowing.specs import AgentSpec, EnvSpec
     from hmz.runtime.flowing.spi import Placement
@@ -86,7 +86,9 @@ class Line(NamedTuple):
       params: Each param as the line wrote it, which the flow's own model reads.
       budget: What the run may spend, as its `-p budget.<limit>=` said, or None where the
         line said nothing of it.
-      profile: Whether to profile the programs the run's agents start, as well as trace them.
+      profile_flow: Whether to sample the flow's own Python while the run goes.
+      profile_environment: Whether to profile the programs the run's agents start, as well as
+        trace them.
       resume: Whether to pick up the newest run of the flow here that can be.
       as_json: Whether a program is reading the run rather than a person.
       backup: The backup targets the epic goes to, by name, or None for the defaults.
@@ -98,7 +100,8 @@ class Line(NamedTuple):
     envs: tuple[EnvSpec, ...] = ()
     params: dict[str, str] = {}  # noqa: RUF012 -- a NamedTuple's default, never written to
     budget: Budget | None = None
-    profile: bool = False
+    profile_flow: bool = False
+    profile_environment: bool = False
     resume: bool = False
     as_json: bool = False
     backup: tuple[str, ...] | None = None
@@ -164,7 +167,13 @@ def read_line(argv: list[str]) -> Line:
         "required except for chat",
     )
     parser.add_argument(
-        "--profile",
+        "--profile-flow",
+        action="store_true",
+        help="sample the flow's own Python while the run goes, so the run's trace shows "
+        "where the flow spent its time between and around the turns",
+    )
+    parser.add_argument(
+        "--profile-environment",
         action="store_true",
         help="sample the programs the agents start while the run goes, so the run's trace "
         "shows what each turn spent its time on beside the turn",
@@ -215,7 +224,8 @@ def read_line(argv: list[str]) -> Line:
             envs=tuple(parse_envs(args.envs)),
             params=parse_params(args.params),
             budget=parse_budget(args.params),
-            profile=args.profile,
+            profile_flow=args.profile_flow,
+            profile_environment=args.profile_environment,
             resume=args.resume,
             as_json=args.as_json,
             backup=None if backup is None else tuple(backup),
@@ -240,7 +250,8 @@ class Runner:
         envs: Mapping[str, str | EnvDriver] | Iterable[EnvSpec] = (),
         params: Mapping[str, Any] | FlowParams | None = None,
         budget: Budget | Mapping[str, Any] | None = None,
-        profile: bool = False,
+        profile_flow: bool = False,
+        profile_environment: bool = False,
         resume: bool | str | os.PathLike[str] = False,
         workspace: str | os.PathLike[str] | None = None,
         backup: Iterable[str] | None = None,
@@ -259,9 +270,10 @@ class Runner:
             `-p` among them -- or None for its defaults.
           budget: What the run may spend. Only `chat` may be run without one, under
             `Budget(cost=inf)`.
-          profile: Whether to sample the programs the agents start while the run goes, as
-            well as trace them. Off unless asked, since it is a sampler running for as long
-            as the flow does.
+          profile_flow: Whether to sample the flow's own Python while the run goes. Off
+            unless asked, since it is a sampler running for as long as the flow does.
+          profile_environment: Whether to sample the programs the agents start while the run
+            goes, as well as trace them. Off unless asked, for the same reason.
           resume: Whether to pick up the newest run of this flow in the workspace that can
             be picked up, or the epic to pick up.
           workspace: Where the run happens, defaulting to this directory.
@@ -304,7 +316,8 @@ class Runner:
                 )
             budget = Budget(cost=math.inf)
         self._budget = budget if isinstance(budget, Budget) else _budget(budget)
-        self._profile = profile
+        self._profile_flow = profile_flow
+        self._profile_environment = profile_environment
         self._picked_up = self._picks_up(resume)
         from .backing import chosen
 
@@ -314,9 +327,9 @@ class Runner:
             raise Refused(str(why)) from why
         # Made last, once everything that could refuse the run has had its say: a driver
         # starts nothing as it is made, and none is made for a run that is refused.
-        #: The runtimes the agents' harnesses go to where the runtime their work is on has
-        #: an affinity: opened the way an environment is, probed with them before the flow
-        #: is called, and closed with them.
+        #: The runtimes the agents' harnesses go to where the harness setting of the runtime
+        #: their work is on names one: opened the way an environment is, probed with them
+        #: before the flow is called, and closed with them.
         self._harbors = _harbors()
         self._agents = _agent_drivers(agents_given, self._harbors)
         self._envs, self._unopened = _env_drivers(envs_given, declared)
@@ -562,9 +575,14 @@ class Runner:
         return self._backup
 
     @property
-    def profile(self) -> bool:
+    def profile_flow(self) -> bool:
+        """Whether the run samples the flow's own Python while it runs."""
+        return self._profile_flow
+
+    @property
+    def profile_environment(self) -> bool:
         """Whether the run profiles the programs its agents start, as well as tracing them."""
-        return self._profile
+        return self._profile_environment
 
     @property
     def picked_up(self) -> Path | None:
@@ -680,8 +698,8 @@ class Runner:
 
         Raises:
           Refused: If an environment cannot be reached -- nor any runtime its runtime falls
-            back to --, an agent's harness has nowhere the affinity of one of them names
-            with room, or the drivers do not meet what the flow declares -- before the flow
+            back to --, an agent's harness cannot run where the harness setting of one
+            of them says, or the drivers do not meet what the flow declares -- before the flow
             has been called.
           BaseException: Whatever the flow raised, as it raised it.
         """
@@ -693,7 +711,7 @@ class Runner:
             ParamsError,
             RequirementError,
         )
-        from hmz.runtime.flowing import local_env, open_outworlder, run_flow
+        from hmz.runtime.flowing import local_env, open_outworlder, privileged, run_flow
 
         from .backing import Keeping
         from .epic import Epic
@@ -734,7 +752,10 @@ class Runner:
             budget=json.loads(self._budget.model_dump_json()),
             resumable=impl.resumable,
             picked_up=self._picked_up,
-            profile=self._profile,
+            # A chat carried on is the same conversation, and so the same epic.
+            reopened=privileged(impl),
+            profile_flow=self._profile_flow,
+            profile_environment=self._profile_environment,
             backup=self._backup,
         )
         # Backed up as its targets' policies say, each on a thread of its own: as a session
@@ -792,7 +813,7 @@ class Runner:
         Where its runtime cannot hold it -- the role's declared resources among what it is
         held to -- an environment moves down that runtime's fallback list, and the driver and
         the spec of the runtime that did hold it are the role's from then on: what the flow is
-        handed, what the epic says it ran on, and whose affinity says where a harness of work
+        handed, what the epic says it ran on, and whose harness setting says where a harness of work
         there goes -- the runtime that held the role, never the one it was moved off.
 
         Raises:
@@ -844,12 +865,12 @@ class Runner:
         Every agent against every environment, the workspace among them: which environment a
         flow puts which agent's sessions in is the flow's to decide as it runs, so a harness
         that could not be put on one of them is one the run could fail on part way through.
-        Which opens and probes every runtime an affinity sends a harness to.
+        Which opens and probes every runtime a harness setting sends a harness to.
 
         Raises:
           HarnessError: The refusal, as the agent's first session there would have had it.
-          EnvError: Where an affinity ends on a runtime that cannot be reached.
-          ResourceUnmet: Where it ends on one with no share left.
+          EnvError: Where a harness setting names a runtime that cannot be reached.
+          ResourceUnmet: Where it names one with no share left.
         """
         from hmz.runtime.flowing.harnesses import HarnessDriver
 
@@ -1108,7 +1129,7 @@ def _agent_drivers(
 
 def _harbors() -> Harbors:
     """The run's harness runtimes, none of them opened yet."""
-    from hmz.runtime.flowing.affinity import Harbors
+    from hmz.runtime.flowing.harbors import Harbors
 
     return Harbors()
 

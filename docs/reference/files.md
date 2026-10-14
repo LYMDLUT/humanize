@@ -61,11 +61,10 @@ M/
 ├── prices.json                         the price table
 ├── releases.json                       the newest release of hmz
 ├── models/<cli>/<account>.json         model catalogues, `_local` for the CLI's own sign-in
-├── harness/                            workdir of a harness an affinity puts on a docker daemon or Apple containers here
+├── harness/                            workdir of a harness a harness setting puts on a docker daemon or Apple containers here
 ├── pinned/<blake2b-8(url)>/<sha>/      checkouts of git+ refs and of releases installed
 ├── skills/<owner>-<repo>-<sha256[:12]>/  skill repositories a never-installed flow names by URL
 ├── .<backend>.<name>.lock              held while a run allocates from a runtime
-├── .pi.models.lock                     held while a turn adds a gateway to pi's models.json
 ├── compiled/{pi,qwen}/                 Node compile caches
 ├── docker-ssh/<sha256[:16]>/ssh        ssh shim for docker over ssh
 └── patched/<cli>-<pid>-<rand>/         patched CLI copies (unused in production)
@@ -263,11 +262,13 @@ named and labelled the same way, on the swarm its runtime's manager manages, and
 `apple-container` environment's container likewise, less `humanize.gpus`, by Apple's `container`
 on this Mac. A `slurm` environment's job is named the same way and carries the same labels,
 with `humanize.name`, URL-encoded in its comment; nothing is mounted, its workdir being the
-same path on a shared filesystem.
+same path on a shared filesystem. A docker or swarm runtime that sets a
+[`name_prefix`](/reference/machines#a-docker-daemon) names its containers or services
+`<name_prefix>-<role>-<hex8>` instead.
 
 ### `M/harness/`
 
-An empty directory mounted as the workdir of a harness an affinity puts on a docker runtime
+An empty directory mounted as the workdir of a harness a harness setting puts on a docker runtime
 whose daemon is on this machine, or on an Apple container, saved without a workdir
 ([Harness placement](/reference/flows#harness-placement)): a container needs a directory of
 this user's on the host to mount. Created by the run; nothing is written into it by humanize.
@@ -284,7 +285,8 @@ One run ([Tracing › Epics](/reference/tracing#epics) has every schema). `<stam
 | `epic.jsonl` | appended per event, open/write/close under a thread lock; no fsync | [events](/reference/tracing#epic-jsonl) |
 | `epic.<flow>_<hex6>.jsonl` | one per flow call | [records](/reference/tracing#records-of-called-flows) |
 | `resume.jsonl` | resumable runs only; compacted via `.resume.jsonl.<random>.new` + fsync + rename, then appended `O_APPEND` | [journal](/reference/flows#journal) |
-| `profile.jsonl` | profiled runs only | [profile](/reference/tracing#profile-jsonl) |
+| `profile.jsonl` | runs whose environment was profiled | [profile](/reference/tracing#profile-jsonl) |
+| `flow-profile.jsonl` | runs whose flow was profiled | [flow profile](/reference/tracing#flow-profile-jsonl) |
 | `host.log` | runs held by a [host process](/reference/daemon#files) only; appended (`0600`), never rotated | that process's descriptors 1 and 2 while the run is the one it holds: output of the CLIs the run started, and the carrier's failures |
 | `.held` | empty, `0600`; `flock`ed exclusively by the process running the run until `ended` is written | a run whose `.held` is locked is still going, and is not [picked up](/reference/cli#picking-a-run-up) |
 | `sessions/<cli>/…` | by the CLI itself, redirected | the CLI's own layout |
@@ -300,6 +302,7 @@ Epics are never deleted by humanize.
 | `M/docker-ssh/<sha256[:16]>/ssh` | shim for `docker` over `ssh://` with options; directory and file `0700`; touched on each use, written again if gone |
 | `M/patched/<cli>-<pid>-<rand>/` | `0700`; directories of dead processes are removed |
 | `~/.cache/humanize/shadows/<sha256(path)[:16]>.json` | `{"shadow": "<abs path>", "target": "<target>"}` per mirror; moved by [`HUMANIZE_SHADOWS`](/reference/environment#humanize-shadows); never removed |
+| `~/.cache/humanize/shadows/<sha256(path)[:16]>.journal`, `….live` | what the turns working in a mirror know of it, one JSON change a line, and the lock each holds shared while it works there; `0600`; begun again by a turn starting alone; moved and kept as the record is |
 
 Every path in this section is safe to delete while humanize is not running.
 
@@ -310,7 +313,7 @@ Every path in this section is safe to delete while humanize is not running.
 | `$TMPDIR/hmz-fence-XXXXXXXX/` (`0700`) | a fenced process's `TMPDIR`; `cache/<var>` inside for redirected caches | when the process ends (left on `SIGKILL`) |
 | the same path, on a machine a supervised agent's commands run on | that agent's commands' `TMPDIR` there | kept |
 | `$TMPDIR/humanize-hook-*/hook.sock`, `humanize-tools-*/tools.sock`, `humanize-preload-*/said.sock` | sockets a CLI reports hooks, tool calls and preload events on | with the session |
-| `$TMPDIR/hmz-dsh-*/humanize.patch.yml`, `hmz-qwen-*/` | per-session CLI configuration | with the session |
+| `$TMPDIR/hmz-dsh-*/humanize.patch.yml` | per-session CLI configuration | with the session |
 | `$TMPDIR/humanize-<uid>/pinned/<blake2b-8(url)>/<sha>/` | checkouts of [`git+` refs](/reference/flows#refs), and of the releases [installed](/reference/flows#installing): a full clone with `--no-checkout` into `.<uuid>`, checked out detached at `<sha>`, renamed into place; one per commit | never; cloned again when missing |
 | `$TMPDIR/humanize-<uid>/` (`0700`, refused if anyone else can write it): `humanize-<digest>.pyz` (`0700`), `<stamp>.digest` (`0600`) | the humanize bundle copied to other machines, one per source tree it was built from, and which tree built which | any `humanize-*` or `*.digest` in it untouched for 14 days, when another bundle is built; a run touches the one it uses at least hourly |
 | `$TMPDIR/humanize-<uid>/skills/<owner>-<repo>-<sha256(url)[:12]>/` | clones of skill repositories a role of a flow that was never installed names by URL ([Skills](/reference/flows#the-skills-a-flow-brings)), fetched again each run that names them | kept |
@@ -327,12 +330,11 @@ Every path in this section is safe to delete while humanize is not running.
 
 | Path | Is |
 | --- | --- |
-| `$HOME/.cache/humanize/humanize-<digest>.pyz` | the humanize bundle on an `ssh` machine or a Slurm job's node (`/tmp/humanize/…` in a container); checked against `<digest>` on arrival and when already there, written to `f.<pid>` and moved into place; every run line touches the one it runs; other `humanize-*.pyz*` untouched for 14 days are removed by the next install |
-| `$HOME/.cache/humanize-mirrors/<sha256[:16]>/` on an `ssh` machine; `/tmp/humanize-mirrors/<sha256[:16]>/` in a container | a remote harness's mirror of the workspace |
+| `$HOME/.cache/humanize/humanize-<digest>.pyz` | the humanize bundle on an `ssh` machine or a Slurm job's node (`/tmp/humanize/…` in a container, `/tmp/humanize-<UID>/…`, `0700`, for a docker target naming `user=UID`); checked against `<digest>` on arrival and when already there, written to `f.<pid>` and moved into place; every run line touches the one it runs; other `humanize-*.pyz*` untouched for 14 days are removed by the next install |
+| `$HOME/.cache/humanize-mirrors/<sha256[:16]>/` on an `ssh` machine; `/tmp/humanize-mirrors/<sha256[:16]>/` in a container; `/tmp/humanize-mirrors-<UID>/<sha256[:16]>/` for a docker target naming `user=UID` | a remote harness's mirror of the workspace |
 | `${HUMANIZE_HOME:-$HOME/.hmz}/envs/` | as [above](#state-envs) |
 | `/tmp/humanize-slurm-<job>.out` on a Slurm job's node | what a `via: tcp` job's serving half says on its way up, which its port is read from; left to the node |
 | a `mktemp -d` directory (umask `077`) | per-session files of a native turn, including projected credentials (`0600`); removed after the turn |
-| `.humanize-carried/<uuid>` | claim file inside a directory carried to the target |
 
 ## Read, never written
 
@@ -343,8 +345,9 @@ Every path in this section is safe to delete while humanize is not running.
 | `$DSH_HOME` (`~/.dsh`): `settings.yaml`, `.credentials.yaml`, `.env` | DeepSeek Harness key and endpoint |
 
 Antigravity's permission profiles `hmz-read-only.md`, `hmz-read-only-web.md` and
-`hmz-offline.md` are written into Antigravity's own home, `~/.gemini/antigravity-cli/agents/`,
-when their content changes.
+`hmz-offline.md` are written into the `agents/` of the
+[virtual home](/reference/agents#virtual-homes) each agy process is started in, beside links to
+your own; `~/.gemini/antigravity-cli/agents/` is never written.
 
 ## Retention
 

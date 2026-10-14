@@ -49,7 +49,8 @@ answer at once:
 | `-p budget.…` | what the run may spend | every flow but `chat` |
 | `-p` | the flow's own [params](/weaver/flow-settings), where you want other than the defaults | when you want them |
 | `-e` | where an environment role is, for a flow that works on [another machine](/user/remote-execution) | when the flow has one |
-| `--profile` | sample the programs the agents start, so the run's trace shows what each turn spent its time on | no |
+| `--profile-flow` | sample the flow's own Python, so the run's trace shows where the flow spent its time | no |
+| `--profile-environment` | sample the programs the agents start, so the run's trace shows what each turn spent its time on | no |
 | `--resume` | carry on the last run of this flow here, rather than start over | no |
 | `--json` | write the run to stdout as one JSON object per line | no |
 | the task | what the flow is to do | always |
@@ -317,8 +318,8 @@ hmz exec -f humanize1:rlcr -p max=9,plan_file=docs/plan.md \
 A flow that works on another machine takes it with `-e`, as `role=local/abs/path`,
 `role=ssh@<host>/path` for a host saved under that name, `role=ssh@[user@host:port]/path` for
 one nobody saved, or `role=docker@<daemon>/path`; where each agent's CLI runs while it works
-there is the [affinity](/user/remote-execution#where-the-agent-runs) of the host or daemon
-saved under that name. Most flows have no such role. See [Remote
+there is the [harness setting](/user/remote-execution#where-the-agent-runs) of the host or
+daemon saved under that name (`env`, on that machine, for one nobody saved). Most flows have no such role. See [Remote
 execution](/user/remote-execution).
 
 ### Stop it, and pick it up again

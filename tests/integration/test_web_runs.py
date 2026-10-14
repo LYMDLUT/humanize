@@ -10,14 +10,22 @@ import pytest
 
 from hmz import machine
 from hmz.runtime.epic import Epic
-from tests.integration.doubles_core import AGENT, install, started
+from tests.integration.doubles_core import AGENT, install, started, write_flow
+from tests.integration.doubles_daemon import WAITS
+from tests.integration.doubles_daemon import until as wait
 from tests.integration.doubles_web import Browser, elsewhere, served, until
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-#: Chat, on the stand-in, as a page starts it.
-_CHAT = {"flow": "chat", "task": "hello there", "agents": {"assistant": AGENT}}
+#: Chat, on the stand-in, as a page starts it -- on the workspace's own host, which these
+#: follow from before it starts; one started without saying where is a new chat's own.
+_CHAT = {
+    "flow": "chat",
+    "task": "hello there",
+    "agents": {"assistant": AGENT},
+    "slot": "",
+}
 
 
 @pytest.fixture
@@ -39,6 +47,19 @@ def _record(of: str, **said: Any) -> Callable[[str, Any], bool]:
     return wanted
 
 
+def _turn(turn: str) -> Callable[[str, Any], bool]:
+    """Whether an event says a chat's turn stands so."""
+
+    def wanted(event: str, data: Any) -> bool:
+        return (
+            event == "standing"
+            and data.get("type") == "run"
+            and data.get("turn") == turn
+        )
+
+    return wanted
+
+
 def test_a_run_started_from_a_page_is_followed_answered_and_stopped(
     project: Path,
 ) -> None:
@@ -52,6 +73,10 @@ def test_a_run_started_from_a_page_is_followed_answered_and_stopped(
             _, said = until(heard, _record("event", kind="text"), "what the agent said")
             assert said["text"] == "did: hello there"
             _, asked = until(heard, _record("asked", role="human"), "chat asking")
+            # Asking what to say next, the chat's turn is done, though it goes on.
+            until(heard, _turn("done"), "the turn done")
+            (going,) = browser.get("/api/runs").json()["runs"]
+            assert (going["held"], going["how"]) == (True, "done")
             refused = browser.post("/api/held/answer", {"question": "q0", "text": "x"})
             assert refused.status == 409
             assert refused.json()["error"]
@@ -65,12 +90,13 @@ def test_a_run_started_from_a_page_is_followed_answered_and_stopped(
             until(heard, _record("ended", how="stopped"), "the run ending")
 
         listed = browser.get("/api/runs").json()
-        assert listed["counts"] == {"stopped": 1}
+        # A chat left is done, however it was left.
+        assert listed["counts"] == {"done": 1}
         (run,) = listed["runs"]
         assert (run["flow"], run["task"], run["how"]) == (
             "chat",
             "hello there",
-            "stopped",
+            "done",
         )
         one = browser.get(f"/api/runs/{run['name']}").json()
         assert [agent["runs"] for agent in one["agents"]] == [f"{AGENT}:auto"]
@@ -173,7 +199,8 @@ def test_a_side_question_is_asked_beside_the_run_and_never_of_it(
                 (key, "and you"),
             ]
             assert browser.post("/api/btw/leave").status == 200
-            assert browser.get("/api/btw").json() == {"open": [], "said": []}
+            left = browser.get("/api/btw").json()
+            assert (left["open"], left["said"]) == ([], [])
 
             # Nothing asked beside the run reached it: its one session said only its own.
             browser.post("/api/held/stop")
@@ -276,6 +303,59 @@ def test_an_epic_written_down_is_laid_out_as_a_timeline_and_each_span_read_whole
             assert gone.status == 404
 
 
+def test_the_btw_agent_picked_for_an_epic_is_kept_with_it_and_asked_next(
+    tmp_path: Path, project: Path
+) -> None:
+    with served() as site:
+        browser = Browser(site)
+        browser.signs_in()
+        with browser.follows() as heard:
+            browser.post("/api/held/start", _CHAT)
+            until(heard, _record("asked"), "chat asking")
+            (going,) = browser.get("/api/runs").json()["runs"]
+            epic = going["name"]
+            assert browser.get(f"/api/btw?epic={epic}").json()["agent"] == ""
+            asked = {"question": "what is it doing", "epic": epic}
+            assert browser.post("/api/btw", asked).status == 200
+
+            picked = browser.post(
+                "/api/btw/agent", {"epic": epic, "agent": "claude/other-model"}
+            )
+            assert picked.json() == {"agent": "claude/other-model:auto"}
+            again = browser.post("/api/btw", asked | {"question": "and now"})
+            assert again.status == 200, again.body
+            argv = started(tmp_path)[-1]["argv"]
+            assert argv[argv.index("--model") + 1] == "other-model"
+            # What was said before the agent changed stays to be read back.
+            said = browser.get(f"/api/btw?epic={epic}").json()
+            assert [one["question"] for one in said["said"]] == [
+                "what is it doing",
+                "and now",
+            ]
+            assert said["agent"] == "claude/other-model:auto"
+
+            bad = {"epic": epic, "agent": "no model"}
+            assert browser.post("/api/btw/agent", bad).status == 400
+            nowhere = {"epic": "nope", "agent": ""}
+            assert browser.post("/api/btw/agent", nowhere).status == 404
+            browser.post("/api/held/stop")
+            until(heard, _record("ended"), "the run ending")
+
+        at = Path(browser.get(f"/api/runs/{epic}").json()["at"])
+        lines = (at / "epic.jsonl").read_text().splitlines()
+        assert '"event": "btw", ' in next(one for one in lines if '"btw"' in one)
+
+    with served() as site:
+        browser = Browser(site)
+        browser.signs_in()
+        assert browser.get(f"/api/btw?epic={epic}").json()["agent"] == (
+            "claude/other-model:auto"
+        )
+        cleared = browser.post("/api/btw/agent", {"epic": epic, "agent": ""})
+        assert cleared.json() == {"agent": ""}
+        assert browser.get(f"/api/btw?epic={epic}").json()["agent"] == ""
+
+
 def test_a_session_of_an_earlier_epic_is_asked_beside_it_as_a_fork_of_its_history(
     tmp_path: Path, project: Path
 ) -> None:
@@ -351,7 +431,8 @@ def test_an_exported_epic_is_imported_back_by_its_bytes_or_its_path(
         assert sent.json() == {
             "name": name,
             "workspace": str(project.resolve()),
-            "resumable": False,
+            # A chat, which is carried on from where it was left.
+            "resumable": True,
             "why": "",
         }
         assert browser.get(f"/api/runs/{name}").json()["foreign"] == ""
@@ -391,3 +472,50 @@ def test_an_exported_epic_is_imported_back_by_its_bytes_or_its_path(
         assert browser.sends("/api/runs/import", b"", "x.hmzepic", **huge).status == 413
         # Nothing sent is kept.
         assert not [*machine().glob("tmp*/x.hmzepic")]
+
+
+def test_chats_are_each_their_own_beside_a_flow_and_one_left_is_carried_on(
+    project: Path, tmp_path: Path
+) -> None:
+    write_flow(project / ".hmz" / "flows", "waits", WAITS)
+    chat = {"flow": "chat", "agents": {"assistant": AGENT}}
+    with served() as site:
+        browser = Browser(site)
+        browser.signs_in()
+        # Started without saying where, each chat is a new one, on a host of its own.
+        first = browser.post("/api/held/start", chat | {"task": "first"}).json()
+        second = browser.post("/api/held/start", chat | {"task": "second"}).json()
+        flow = {"flow": "@local/waits", "task": "forever", "budget": {"cost": 5}}
+        going = browser.post("/api/held/start", flow)
+        assert going.status == 200, going.body
+        assert going.json()["slot"] == ""
+        assert len({first["slot"], second["slot"], ""}) == 3
+
+        def rows() -> dict[str, dict[str, Any]]:
+            return {one["task"]: one for one in browser.get("/api/runs").json()["runs"]}
+
+        assert wait(lambda: sum(one["held"] for one in rows().values()) == 3)
+        listed = rows()
+        assert (listed["first"]["slot"], listed["second"]["slot"]) == (
+            first["slot"],
+            second["slot"],
+        )
+        assert wait(lambda: rows()["first"]["how"] == "done")
+
+        # Left, the first chat is done and held no more; said something, it goes on in
+        # its own epic, on a host of its own again.
+        assert browser.post("/api/held/stop", {"slot": first["slot"]}).status == 200
+        assert wait(lambda: not rows()["first"]["held"])
+        epic = rows()["first"]["name"]
+        at = browser.get(f"/api/runs/{epic}").json()["at"]
+        again = browser.post(
+            "/api/held/start", chat | {"task": "and on", "resume": at}
+        ).json()
+        assert wait(lambda: rows()["first"]["held"])
+        assert rows()["first"]["slot"] == again["slot"] != first["slot"]
+        assert len(rows()) == 3
+        detail = browser.get(f"/api/runs/{epic}").json()
+        assert detail["earlier"] == 1
+        assert "--resume" in started(tmp_path)[-1]["argv"]
+        for slot in (again["slot"], second["slot"], ""):
+            browser.post("/api/held/stop", {"slot": slot})

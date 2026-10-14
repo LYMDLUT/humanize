@@ -8,9 +8,9 @@ const running = [
   {
     label: 'round 1',
     lines: [
-      '[dim]❯[/] Fix the bug in calc.py.',
+      '[dim]─ reading agent ─[/][n]1[/]',
       '',
-      '[dim]── agent[/][n]1[/]',
+      '[dim]❯[/] Fix the bug in calc.py.',
       '',
       '[dim]● agent is working[/]',
       '',
@@ -116,7 +116,7 @@ Three words cover what you set up:
   in a fresh conversation each round, until its budget runs out or you stop it.
 - A **role** is a slot the flow declares, such as `agent`, `builder` or `reviewer`. You fill
   each role with an **agent**: a CLI, the account it runs as, a model, and an effort.
-- A **budget** is what a run may spend: time, dollars or output tokens. Every flow except
+- A **budget** is what an epic may spend: time, dollars or output tokens. Every flow except
   `chat` needs one, because most flows are loops that never end on their own.
 
 You set all three in the `/flow` menu, save, and then type the task. Nothing runs until you
@@ -197,24 +197,27 @@ install it; from then on it is listed here, with its version at the end of its r
 
 ## 4. Give the role an agent
 
-The flow opens on its **roles**: a row for each agent it drives, then `budget` and
-`profiling`, and buttons under them, **Save** last. `ralph_loop` has one role, `agent`. humanize
+The flow opens on its **roles**: a row for each agent it drives, then `budget`,
+`profile flow` and `profile environment`, and buttons under them, **Save** last. `ralph_loop` has one role, `agent`. humanize
 fills it with the first CLI it found, so the row already names one.
 
 <Term title="hmz · /flow › ralph_loop">
 
 <pre>  <span class="m">hmz › /flow › Installed ›</span> <span class="p b">ralph_loop</span>                    <span class="y">● unsaved changes</span>
   <span class="m">Configure each role: an agent (CLI, account, model and effort) or an</span>
-  <span class="m">environment; then what the flow takes and what a run may spend.</span>
+  <span class="m">environment; then what the flow takes and what an epic may spend.</span>
 
   <span class="p">╭────────────────────────────────────────────────────────────────────────╮</span>
   <span class="sel"> <b>agent</b>                                     claude/claude-opus-5-5:high ▸ </span> <span class="n">1</span>
      <span class="m">agent</span>
    ────────────────────────────────────────────────────────────────────────
    <b>budget</b>                                                           <span class="m">none ▸</span> <span class="n">2</span>
-     <span class="m">what a run may spend: none set; a run needs one</span>
+     <span class="m">what an epic may spend: none set; an epic needs one</span>
    ────────────────────────────────────────────────────────────────────────
-   <b>profiling</b>                                                       <span class="m">○ off ▾</span> <span class="n">3</span>
+   <b>profile flow</b>                                                    <span class="m">○ off ▾</span> <span class="n">3</span>
+     <span class="m">traced only</span>
+   ────────────────────────────────────────────────────────────────────────
+   <b>profile environment</b>                                             <span class="m">○ off ▾</span>
      <span class="m">traced only</span>
   <span class="p">╰────────────────────────────────────────────────────────────────────────╯</span>
 
@@ -226,7 +229,8 @@ fills it with the first CLI it found, so the row already names one.
 
 1. **`agent`**, the flow's one role, and the agent filling it as `cli/model:effort`.
 2. **`budget`**: none yet. You set it in step 5.
-3. **`profiling`** stays off here: it is for when you want the programs a run starts in its
+3. **`profile flow`** and **`profile environment`** stay off here: they are for when you want
+   the flow's own Python, or the programs a run starts, in its
    [trace](/user/tracing#profiling-a-run).
 4. **Save**: nothing you change is kept until you press it. `● unsaved changes` says something
    is waiting.
@@ -293,12 +297,12 @@ Press <kbd>enter</kbd> on `budget`:
 <Term title="hmz · /flow › ralph_loop › budget">
 
 <pre>  <span class="m">hmz › /flow › Installed › ralph_loop ›</span> <span class="p b">Set budget for ralph_loop</span> <span class="y">● unsaved changes</span>
-  <span class="m">A run stops at whichever limit it reaches first; at least one limit is
+  <span class="m">An epic stops at whichever limit it reaches first; at least one limit is
   required. Leave empty or 0 for no limit.</span>
 
   <span class="p">╭────────────────────────────────────────────────────────────────────────╮</span>
    <b>duration</b>                                                            <span class="a">20m</span> <span class="n">1</span>
-     <span class="m">maximum run duration: 1h30m, 90s, PT2H; empty for no limit</span>
+     <span class="m">maximum epic duration: 1h30m, 90s, PT2H; empty for no limit</span>
    ────────────────────────────────────────────────────────────────────────
   <span class="sel"> <b>cost</b>                                                                0.5 </span> <span class="n">2</span>
   <span class="sel">   maximum cost in US dollars, 0 for no limit                            </span>
@@ -324,7 +328,7 @@ Press <kbd>enter</kbd> on `budget`:
 3. **`graceful`**: on lets the turn that is running finish when a limit is reached; off cuts
    it off. <kbd>enter</kbd> or a click drops the two under it, opening on the one it is not.
 4. **Set** keeps all four: <kbd>tab</kbd> to it and press <kbd>enter</kbd>. The `budget` row
-   then reads `set`, and under it `what a run may spend: stops at 20m, $0.50`.
+   then reads `set`, and under it `what an epic may spend: stops at 20m, $0.50`.
 
 The run stops at whichever limit it reaches first. If your account is billed by the token, set
 a `cost` as well as a `duration`. See [Every run has a budget](/features/allowances).
@@ -351,8 +355,9 @@ it says it:
 
 What to look at, by number:
 
-1. **`── agent`** marks whose words follow. With several agents, a new one appears wherever the
-   speaker changes.
+1. **`─ reading agent ─`** says whose transcript this is: a run lands on the agent of the first
+   conversation it opens, with what you said at the top, and follows that agent into each new
+   conversation.
 2. **`✻ Worked for 7s · agent`** closes a turn: the first round is done, and `calc.py` is
    already fixed.
 3. **`conversation 2 of 2`**: a Ralph loop starts a fresh conversation every round, so the
@@ -428,7 +433,7 @@ remembers, and forgets it.
 
 ### `this flow requires a budget: set the budget first`
 
-Saving refused, because the budget row still reads `none set; a run needs one`. Set at least
+Saving refused, because the budget row still reads `none set; an epic needs one`. Set at least
 one limit in step 5.
 
 ### The cost row reads `0.00.5`

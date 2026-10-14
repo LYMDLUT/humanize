@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from dataclasses import dataclass, field
@@ -153,7 +154,8 @@ def test_an_epic_opens_saying_what_it_is_a_run_of(workspace: Path) -> None:
     assert began["params"] == {"rounds": 3}
     assert began["budget"] == {"cost": 5.0}
     assert began["spelling"] == store.SPELLING
-    assert "profile" not in began
+    assert "profile_flow" not in began
+    assert "profile_environment" not in began
     assert began["at"].endswith("Z")
     assert ended["event"] == "ended"
     assert ended["how"] == "done"
@@ -213,6 +215,33 @@ def test_a_run_picked_up_is_handed_a_copy_of_the_journal(workspace: Path) -> Non
     assert _lines(second.journal)[0]["picked_up"] == first.path.name
 
 
+def test_a_run_reopened_goes_on_in_the_epic_it_picks_up(workspace: Path) -> None:
+    with Epic("chat", "hi", workspace, resumable=True) as first:
+        first.write("usage", cost=1.0, output_tokens=7, seconds=2.0)
+    done = epic.read(first.path)
+    assert done is not None
+    assert (done.how, done.reopened) == ("done", "")
+
+    with Epic(
+        "chat", "again", workspace, resumable=True, picked_up=first.path, reopened=True
+    ) as second:
+        assert second.path == first.path
+        going = epic.read(first.path)
+        assert going is not None
+        # Going again: its last end is the one before it was opened again.
+        assert (going.task, going.how, going.ended) == ("hi", "", "")
+        assert going.reopened
+        second.write("usage", cost=0.5, output_tokens=3, seconds=1.0)
+
+    again = epic.read(first.path)
+    assert again is not None
+    assert again.how == "done"
+    assert again.spent == {"cost": 1.5, "output_tokens": 10, "seconds": 3.0}
+    events = [one["event"] for one in _lines(first.journal)]
+    assert (events.count("began"), events.count("reopened")) == (1, 1)
+    assert epic.every() == [first.path]
+
+
 def test_a_run_picked_up_from_nothing_to_copy_still_opens(workspace: Path) -> None:
     with Epic("f", "t", workspace, picked_up=workspace / "gone") as one:
         assert not one.resume.exists()
@@ -246,13 +275,36 @@ def test_a_profiled_run_is_sampled_while_it_runs(
 
     monkeypatch.setattr(profile, "Profiler", making)
 
-    with Epic("f", "t", workspace, profile=True) as one:
+    with Epic("f", "t", workspace, profile_environment=True) as one:
         assert made[0].started
         assert not made[0].stopped
 
     assert made[0].at == one.path / profile.PROFILE
     assert made[0].stopped
-    assert _lines(one.journal)[0]["profile"] is True
+    assert _lines(one.journal)[0]["profile_environment"] is True
+    assert "profile_flow" not in _lines(one.journal)[0]
+
+
+def test_a_run_whose_flow_is_profiled_samples_it_while_it_runs(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[Profiler] = []
+
+    def making(at: Path) -> Profiler:
+        made.append(Profiler(at))
+        return made[-1]
+
+    monkeypatch.setattr(profile, "Sampler", making)
+    monkeypatch.setattr(profile, "Profiler", making)
+
+    with Epic("f", "t", workspace, profile_flow=True) as one:
+        assert made[0].started
+        assert not made[0].stopped
+
+    assert [one.at for one in made] == [one.path / profile.FLOW_PROFILE]
+    assert made[0].stopped
+    assert _lines(one.journal)[0]["profile_flow"] is True
+    assert "profile_environment" not in _lines(one.journal)[0]
 
 
 def test_a_machine_that_cannot_be_profiled_still_runs(
@@ -262,8 +314,9 @@ def test_a_machine_that_cannot_be_profiled_still_runs(
         return Profiler(at, refuses=True)
 
     monkeypatch.setattr(profile, "Profiler", refusing)
+    monkeypatch.setattr(profile, "Sampler", refusing)
 
-    with Epic("f", "t", workspace, profile=True) as one:
+    with Epic("f", "t", workspace, profile_flow=True, profile_environment=True) as one:
         pass
 
     assert _lines(one.journal)[-1]["how"] == "done"
@@ -361,14 +414,14 @@ def harbored() -> Iterator[str]:
     epic.harbor(target, target)
 
 
-def test_where_a_harness_ran_is_said_as_an_affinity_says_it(
+def test_where_a_harness_ran_is_said_as_a_harness_setting_says_it(
     workspace: Path, monkeypatch: pytest.MonkeyPatch, harbored: str
 ) -> None:
     monkeypatch.setattr(machines, "AnchoredConfig", Anchored)
 
     assert epic.harnessed(None) == store.HERE
     assert epic.harnessed(cast("Any", object())) == store.HERE
-    assert epic.harnessed(cast("Any", Anchored(Anchor(native=True)))) == store.SELF
+    assert epic.harnessed(cast("Any", Anchored(Anchor(native=True)))) == store.ENV
     assert epic.harnessed(cast("Any", Anchored(Anchor()))) == store.HERE
     assert (
         epic.harnessed(cast("Any", Anchored(Anchor(harness="ssh://u12-box"))))
@@ -381,7 +434,7 @@ def test_where_a_harness_ran_is_said_as_an_affinity_says_it(
 
     with Epic("f", "t", workspace) as one:
         said = _opened(one, Agent(machine=Anchored(Anchor(native=True))), "s1")
-    assert said["harness"] == store.SELF
+    assert said["harness"] == store.ENV
 
 
 # ----------------------------------------------------------- calling a flow
@@ -458,7 +511,7 @@ def test_a_run_reads_back_as_what_it_was(workspace: Path) -> None:
     assert ran.budget == {"cost": 1.0}
     assert ran.resumable is True
     assert ran.picked_up == ""
-    assert ran.profile is False
+    assert (ran.profile_flow, ran.profile_environment) == (False, False)
     assert ran.spent == {"cost": 0.5, "output_tokens": 1200, "seconds": 61.5}
     assert [(one.agent, one.ident) for one in ran.sessions] == [
         ("NeiKos496", "s1"),
@@ -812,3 +865,86 @@ def test_an_epic_from_before_sessions_were_kept_reads_its_links(
     assert epic.where(tmp_path, one) == links
     assert epic.logs(tmp_path, one) == {"log.jsonl": target.resolve()}
     assert epic.logs(tmp_path, one._replace(name="other")) == {}
+
+
+# ------------------------------------------------------------------ spending
+
+
+def test_spending_counts_each_day_and_flow_and_how_each_run_ended() -> None:
+    def ran(began: str = "2026-10-08T10:00:00+00:00", **said: Any) -> epic.Ran:
+        return epic.Ran(Path("e"), flow=said.pop("flow", "ralph"), began=began, **said)
+
+    said = epic.spending(
+        [
+            ran(how="done", spent={"cost": 1.5, "output_tokens": 300, "seconds": 60}),
+            ran(
+                "2026-10-07T23:59:00+00:00",
+                flow="goal",
+                how="failed",
+                spent={"cost": 2.0, "output_tokens": 100, "seconds": 30},
+            ),
+            # Still going: a run, and nothing spent yet.
+            ran("2026-10-08T11:00:00+00:00"),
+            # Before the days asked about.
+            ran("2026-10-01T10:00:00+00:00", how="done", spent={"cost": 9.0}),
+            ran("not a moment", how="done", spent={"cost": 9.0}),
+        ],
+        days=2,
+        now=datetime.datetime(2026, 10, 8, 12, 0, tzinfo=datetime.UTC),
+    )
+
+    assert [(one["day"], one["runs"], one["cost"]) for one in said["days"]] == [
+        ("2026-10-07", 1, 2.0),
+        ("2026-10-08", 2, 1.5),
+    ]
+    assert [(one["flow"], one["runs"]) for one in said["flows"]] == [
+        ("goal", 1),  # the costliest first
+        ("ralph", 2),
+    ]
+    assert said["ended"] == {"done": 1, "failed": 1, epic.UNFINISHED: 1}
+    assert said["whole"] == {
+        "runs": 3,
+        "cost": 3.5,
+        "output_tokens": 400,
+        "seconds": 90.0,
+    }
+
+
+def test_how_a_run_went_is_its_end_or_whether_it_is_still_going(
+    workspace: Path,
+) -> None:
+    ended = epic.Ran(workspace, how="stopped")
+    still = epic.Ran(workspace)
+
+    assert epic.ending(ended, going=True) == "stopped"
+    assert epic.ending(still, going=True) == epic.RUNNING
+    assert epic.ending(still, going=False) == epic.UNFINISHED
+    assert set(epic.ENDINGS) >= {"done", "failed", "stopped", epic.RUNNING}
+
+
+def test_a_run_is_found_by_how_it_went_its_flow_and_its_task(workspace: Path) -> None:
+    ran = epic.Ran(workspace / "20260101T000000.000Z-ab", flow="ralph", task="Fix it")
+
+    assert epic.found(ran, "done")
+    assert epic.found(ran, "done", how="done", flow="ralph", text="fix")
+    assert epic.found(ran, "done", text="RALPH")
+    assert epic.found(ran, "done", text="000z-ab")
+    assert not epic.found(ran, "done", how="failed")
+    assert not epic.found(ran, "done", flow="chat")
+    assert not epic.found(ran, "done", text="break")
+
+
+def test_the_btw_agent_an_epic_keeps_is_the_last_it_was_given(workspace: Path) -> None:
+    with Epic("ralph", "fix it", workspace) as one:
+        pass
+    assert (ran := epic.read(one.path)) is not None
+    assert ran.btw == ""
+
+    epic.note(one.path, epic.BTW, agent="claude@work/opus:high")
+    epic.note(one.path, epic.BTW, agent="codex/gpt-5:auto")
+    assert (ran := epic.read(one.path)) is not None
+    assert ran.btw == "codex/gpt-5:auto"
+
+    epic.note(one.path, epic.BTW, agent="")
+    assert (ran := epic.read(one.path)) is not None
+    assert ran.btw == ""

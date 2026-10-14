@@ -13,9 +13,9 @@ from hmz.coganchor.machines.store import (
     APPLE_CONTAINER,
     BACKENDS,
     DOCKER,
+    ENV,
     HERE,
     IMPORTED,
-    SELF,
     SLURM,
     SSH,
     SWARM,
@@ -54,20 +54,20 @@ def written() -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("entry", "said"),
     [
-        (SELF, None),
+        (ENV, None),
         (HERE, None),
         ("ssh:gpu", (SSH, "gpu")),
         ("swarm:s.1", (SWARM, "s.1")),
     ],
 )
-def test_an_affinity_entry_names_a_runtime_or_one_of_the_two_places(
+def test_a_harness_setting_names_a_runtime_or_one_of_the_two_places(
     entry: str, said: tuple[str, str] | None
 ) -> None:
     assert affine(entry) == said
 
 
 @pytest.mark.parametrize("entry", ["", "ssh", "ftp:x", "ssh:", "ssh:-x", "docker:a/b"])
-def test_an_affinity_entry_that_does_not_read_is_refused(entry: str) -> None:
+def test_a_harness_setting_that_does_not_read_is_refused(entry: str) -> None:
     with pytest.raises(ValueError, match="is not where a harness runs"):
         affine(entry)
 
@@ -141,10 +141,9 @@ def test_a_bare_ssh_runtime_is_its_host() -> None:
             {"name": "x", "host": "h", "fallback": ("nowhere",)},
             "must be <backend>:<name>",
         ),
-        ({"name": "x", "host": "h", "affinity": ("ssh:x",)}, "names itself"),
-        ({"name": "x", "host": "h", "affinity": (SELF, SELF)}, "in its affinity twice"),
+        ({"name": "x", "host": "h", "harness": "ssh:x"}, "names itself"),
         (
-            {"name": "x", "host": "h", "affinity": ("ftp:y",)},
+            {"name": "x", "host": "h", "harness": "ftp:y"},
             "is not where a harness runs",
         ),
     ],
@@ -180,7 +179,33 @@ def test_a_workdir_is_absolute_or_under_home(workdir: str) -> None:
         ({"memory": -1}, "cannot be negative"),
         ({"gpu_memory": -1}, "cannot be negative"),
         ({"max_containers": -1}, "cannot be negative"),
+        ({"name_prefix": "-team"}, "invalid name prefix"),
+        ({"name_prefix": "team-"}, "invalid name prefix"),
+        ({"name_prefix": "team.a"}, "invalid name prefix"),
+        ({"name_prefix": "team a"}, "invalid name prefix"),
+        ({"name_prefix": "t" * 55}, "longer than 54 characters"),
         ({"made": IMPORTED}, "made must be typed"),
+        ({"container": "-c"}, "invalid container '-c'"),
+        ({"container": "a b"}, "invalid container"),
+        ({"exec_user": "me"}, "exec user 'me' is not UID[:GID]"),
+        ({"exec_user": "1:"}, "is not UID[:GID]"),
+        ({"exec_env": ("A",)}, "exec variable 'A' is not NAME=VALUE"),
+        ({"exec_env": ("1A=x",)}, "is not NAME=VALUE"),
+        ({"exec_env": ("A=a\nb",)}, "is not NAME=VALUE"),
+        ({"exec_wrapper": ("",)}, "exec wrapper word '' is empty or two lines"),
+        ({"exec_wrapper": ("a\nb",)}, "is empty or two lines"),
+        (
+            {"container": "box", "image": "debian:13", "cpus": 2.0},
+            (
+                "running container box starts none, so it cannot say an image or "
+                "what it may hand out"
+            ),
+        ),
+        ({"container": "box", "run_args": ("--x",)}, "cannot say run arguments"),
+        ({"container": "box", "runtime": "nvidia"}, "cannot say an OCI runtime"),
+        ({"container": "box", "name_prefix": "team-a"}, "cannot say a name prefix"),
+        ({"container": "box", "gpu_memory": 1}, "cannot say what it may hand out"),
+        ({"container": "box", "max_containers": 2}, "cannot say a container limit"),
     ],
 )
 def test_what_a_docker_daemon_could_not_be_told_is_refused(
@@ -205,6 +230,39 @@ def test_every_spelling_of_a_daemon_is_taken(endpoint: str) -> None:
     assert DockerRuntime(name="box", endpoint=endpoint).endpoint == endpoint
 
 
+def test_a_daemon_says_what_every_exec_into_its_containers_is_told() -> None:
+    runtime = new(
+        DOCKER,
+        "box",
+        container="build-box",
+        exec_user="1000:100",
+        exec_env=["A=1", "B="],
+        exec_wrapper=["/w", "64"],
+        workdir="/srv",
+        harness="local",
+    )
+
+    assert isinstance(runtime, DockerRuntime)
+    assert runtime.exec_options() == (
+        ("user", "1000:100"),
+        ("env", "A=1"),
+        ("env", "B="),
+        ("exec", "/w"),
+        ("exec", "64"),
+    )
+    assert DockerRuntime(name="bare").exec_options() == ()
+    held = runtime.held()
+    assert (held["container"], held["exec_env"]) == ("build-box", ["A=1", "B="])
+    assert (
+        new(
+            DOCKER,
+            "box",
+            **{k: v for k, v in held.items() if k not in ("backend", "name")},
+        )
+        == runtime
+    )
+
+
 @pytest.mark.parametrize(
     ("said", "why"),
     [
@@ -219,6 +277,9 @@ def test_every_spelling_of_a_daemon_is_taken(endpoint: str) -> None:
         ({"constraints": ("node.role==x\ny",)}, "invalid constraint"),
         ({"nodes": {"-n": "gpu"}}, "invalid node host name"),
         ({"nodes": {"n": "not a destination"}}, "is neither a saved ssh host"),
+        ({"name_prefix": "_team"}, "invalid name prefix"),
+        ({"name_prefix": "team/a"}, "invalid name prefix"),
+        ({"name_prefix": "t" * 55}, "longer than 54 characters"),
         ({"made": IMPORTED}, "made must be typed"),
     ],
 )
@@ -227,6 +288,15 @@ def test_what_a_swarm_could_not_be_told_is_refused(
 ) -> None:
     with pytest.raises(ValueError, match=re.escape(why)):
         SwarmRuntime(name="sw", **said)
+
+
+@pytest.mark.parametrize("prefix", ["t", "team-a", "Team_2", "t" * 54])
+@pytest.mark.parametrize("backend", [DOCKER, SWARM])
+def test_a_name_prefix_is_kept_as_it_was_written(backend: str, prefix: str) -> None:
+    runtime = new(backend, "box", name_prefix=prefix)
+
+    assert runtime.held()["name_prefix"] == prefix
+    assert new(backend, "box", name_prefix="").held()["name_prefix"] == ""
 
 
 def test_a_swarm_takes_constraints_and_nodes_it_can_reach() -> None:
@@ -309,7 +379,7 @@ def test_a_slurm_cluster_takes_what_its_jobs_are_submitted_under() -> None:
         run_args=("--exclusive",),
         max_jobs=8,
         max_wait=600,
-        affinity=("local",),
+        harness="local",
     )
 
     assert (
@@ -445,6 +515,31 @@ def test_every_runtime_is_listed_by_backend_then_by_name() -> None:
         (SLURM, "hpc"),
     ]
     assert [one.name for one in runtimes(DOCKER)] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("affinity", "harness"),
+    [
+        ([], ENV),
+        (["self", "local"], ENV),
+        (["local"], HERE),
+        (["docker:box"], "docker:box"),
+    ],
+)
+def test_an_affinity_of_before_is_read_as_its_first_entry(
+    affinity: list[str], harness: str
+) -> None:
+    settings.changes(
+        lambda held: held.update(
+            runtimes={"ssh": {"gpu": {"host": "h", "affinity": affinity}}}
+        )
+    )
+
+    found = find(SSH, "gpu")
+    assert isinstance(found, SSHRuntime)
+    assert found.harness == harness
+    write(found)
+    assert "affinity" not in written()["runtimes"]["ssh"]["gpu"]
 
 
 def test_an_entry_that_does_not_read_is_saved_but_not_a_runtime() -> None:

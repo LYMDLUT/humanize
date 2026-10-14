@@ -19,7 +19,9 @@ without the run in it is a report nobody can develop against -- so the contents 
 Credentials are nobody's to send. Every byte written here goes through :func:`plain` first: the
 values of every account's variables struck out literally, the shapes the vendors mint keys in struck
 out by pattern, and anything signed into a URL taken out the way a flowverse's own URL is taken
-apart before it is shown. A token in a bundle is a token in an issue tracker, forever.
+apart before it is shown. A token in a bundle is a token in an issue tracker, forever. The
+patterns are :func:`hmz.runtime.telemetry.scrubbed`'s, so that what a report never carries and
+what a bundle never carries are one list of credentials rather than two that drift apart.
 
 Less what the run is read by. `input_tokens` is how these backends write down what a turn
 cost, and an account may hold the model to ask for -- a bundle with the bill or the model
@@ -46,7 +48,6 @@ import io
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import tarfile
@@ -56,6 +57,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from hmz.coganchor import backends
+from hmz.runtime import telemetry
 from hmz.runtime.epic import (
     JOURNAL,
     RESUME,
@@ -82,6 +84,7 @@ __all__ = [
     "STRUCK",
     "TRANSCRIPT",
     "bundle",
+    "lands",
     "logged",
     "placed",
     "plain",
@@ -147,69 +150,6 @@ _UNITS = ("B", "kB", "MB", "GB", "TB")
 _THOUSAND = 1000.0
 _ROUGHLY = 10.0
 
-#: What is struck out of every byte this writes, by pattern, and what stands in its place.
-#: Read in order, and written here rather than reached for in :mod:`hmz.runtime.telemetry`: that
-#: module scrubs what humanize sends about somebody, which is a promise about names and
-#: counts, and this scrubs what somebody sends about themselves, which is a promise about
-#: credentials alone. Two promises, deliberately not one regular expression.
-_SCRUBS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # A user and a password signed into a URL, which is how a private flowverse is added and
-    # how several of these gateways are configured. `/flowverses` takes exactly this out of
-    # the URL it shows, for the reason it gives: a token on a screen is a token in a
-    # photograph, and a token in an archive is one in whatever issue the archive is attached
-    # to. Only the run immediately after `//`, so a comment holding an address is left alone.
-    (re.compile(r"(?<=//)[^/\s@\"'<>]+(?=@)"), REDACTED),
-    # A token signed into a query string, which is how every pre-signed URL there is carries
-    # one -- an upload to a bucket, a webhook, a download link an agent was handed. The name
-    # must end where the word does and whatever comes before it must end at a separator:
-    # `?max_tokens=` is what a turn cost and `?monkey=` is somebody's parameter, and a bundle
-    # that struck either out would be one nobody can read.
-    (
-        re.compile(
-            r"(?i)([?&](?:[a-z0-9.-]+[_-])?"
-            r"(?:access_token|token|api[_-]?key|key|secret|sig|signature|password"
-            r"|credential)=)[^&\s\"'<>]+"
-        ),
-        rf"\1{REDACTED}",
-    ),
-    # The shapes the vendors mint keys in. A prefix and a separator, which is what makes
-    # these safe to strike on sight: no English word begins `sk-` or `ghp_`.
-    (
-        re.compile(
-            r"\b(?:sk|pk|ghp|gho|ghu|ghs|ghr|github_pat|glpat|xai|xoxb|xoxp|hf)"
-            r"[-_][A-Za-z0-9_-]{12,}\b"
-        ),
-        REDACTED,
-    ),
-    # Google's, which has no separator, and a JWT, which is three pieces of base64 with a dot
-    # between each -- what half of these CLIs actually hold a session open with.
-    (re.compile(r"\bAIza[A-Za-z0-9_-]{16,}\b"), REDACTED),
-    (
-        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
-        REDACTED,
-    ),
-    # What an Authorization header is, wherever a log happened to write one down.
-    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}"), rf"\1{REDACTED}"),
-    # And a value a log named itself: `"api_key": "..."` in JSON, `SOMETHING_TOKEN=...` in an
-    # environment. The name must end there -- `token`, not `tokens` -- because `input_tokens`
-    # is how every one of these backends writes down what a turn cost, and a bundle that
-    # struck the numbers out of those would be one nobody can read a bill out of.
-    (
-        re.compile(
-            r"(?i)(\"[A-Za-z0-9_.-]*(?:token|secret|api[_-]?key|password|credential)\""
-            r"\s*:\s*\")[^\"]{4,}"
-        ),
-        rf"\1{REDACTED}",
-    ),
-    (
-        re.compile(
-            r"(?i)\b([A-Za-z0-9_]*(?:token|secret|api[_-]?key|password|credential)=)"
-            r"[^\s\"',}]{4,}"
-        ),
-        rf"\1{REDACTED}",
-    ),
-)
-
 
 def bundle(
     epic: Path,
@@ -220,9 +160,9 @@ def bundle(
     """Writes one whole run as one archive, credentials struck out of every byte of it.
 
     Everything the run wrote goes in -- its own record, a record per flow it called, the
-    state a resumable flow left, the profile of the programs it ran, every trace gathered of
-    it -- and beside those the session logs themselves, each filed under the session it is a
-    log of.
+    state a resumable flow left, the profiles of the programs it ran and of the flow's own
+    Python, every trace gathered of it -- and beside those the session logs themselves, each
+    filed under the session it is a log of.
 
     Args:
       epic: The run, by the directory it is written in.
@@ -246,7 +186,7 @@ def bundle(
     ran = read(epic)
     if ran is None:
         raise ValueError(f"{epic} is not a run")
-    landed = _lands(epic, at)
+    landed = lands(epic.name, at)
     landed.parent.mkdir(parents=True, exist_ok=True)
     # Written whole under a name of its own and moved into place: an archive read while it
     # is being written is one nothing can open, and two exports of one run at once would
@@ -692,9 +632,7 @@ def plain(said: str, struck: Sequence[str] = ()) -> str:
     """
     for one in struck:
         said = said.replace(one, REDACTED)
-    for pattern, instead in _SCRUBS:
-        said = pattern.sub(instead, said)
-    return said
+    return telemetry.scrubbed(said, REDACTED)
 
 
 def sized(count: int) -> str:
@@ -724,11 +662,11 @@ def _now() -> str:
     )
 
 
-def _lands(epic: Path, at: str | os.PathLike[str]) -> Path:
+def lands(epic: str, at: str | os.PathLike[str]) -> Path:
     """Where one bundle is written, out of what was asked for.
 
     Args:
-      epic: The run, by the directory it is written in.
+      epic: What the run is called, which is what its bundle is called after.
       at: A file, or a directory to put it in under its own name, from the home a leading
         `~` names where it starts with one.
 
@@ -737,7 +675,7 @@ def _lands(epic: Path, at: str | os.PathLike[str]) -> Path:
       path somebody is about to attach something to, and a relative one is a path they then
       have to remember which directory they were standing in for.
     """
-    named = BUNDLE.format(epic=epic.name)
+    named = BUNDLE.format(epic=epic)
     said = os.fspath(at)
     try:
         asked = Path(said).expanduser().absolute()
@@ -755,7 +693,8 @@ def _files(epic: Path) -> Iterator[tuple[str, Path]]:
     """Everything one run wrote down about itself, by the name it goes in the archive under.
 
     The run's own record first, then a record per flow it called, then the journal a
-    resumable flow kept, the profile of the programs it ran, and every trace gathered of it.
+    resumable flow kept, the profiles of the programs it ran and of the flow's own Python, and
+    every trace gathered of it.
     Each is absent from a run that never wrote one -- a flow that is not resumable, a run
     nobody profiled -- and an absent one is left out rather than carried as an empty file.
 
@@ -765,11 +704,11 @@ def _files(epic: Path) -> Iterator[tuple[str, Path]]:
     Yields:
       What to call it inside the archive, and where to read it from.
     """
-    from hmz.runtime.tracing.profile import PROFILE
+    from hmz.runtime.tracing.profile import FLOW_PROFILE, PROFILE
 
     for one in records(epic):
         yield one.name, one
-    for name in (RESUME, PROFILE):
+    for name in (RESUME, PROFILE, FLOW_PROFILE):
         if (epic / name).is_file():
             yield name, epic / name
     with contextlib.suppress(OSError):

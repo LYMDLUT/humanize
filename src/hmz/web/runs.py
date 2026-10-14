@@ -34,12 +34,11 @@ __all__ = ["BUNDLE", "ROUTES", "Runs", "refused"]
 #: What an epic's archive is sent as.
 BUNDLE = "application/vnd.hmz.epic+gzip"
 
-#: How a run that has not ended is said, where it is not the run going now: one killed where
-#: it stood, which no record says the end of.
-UNFINISHED = "unfinished"
+#: How a chat is said between its turns, and once it is over however it ended but failing.
+DONE = "done"
 
-#: How the run going now is said, before its epic says how it ended.
-RUNNING = "running"
+#: The flow that is a conversation, said a turn at a time rather than as one run.
+CHAT = "chat"
 
 #: The most rows one page of the list holds.
 _PAGE = 200
@@ -95,7 +94,7 @@ class Runs:
     def workspaces(self) -> list[dict[str, Any]]:
         """Every workspace there is to offer, with how many runs it has and when it last ran."""
         runs = self.all()
-        running = self._places.running()
+        running = {one["workspace"] for one in self._places.running()}
         mine: dict[str, list[Ran]] = {}
         for ran in runs:
             mine.setdefault(_resolved(ran.workspace), []).append(ran)
@@ -168,14 +167,7 @@ class Runs:
             kept = self._traced.get(ran.at)
         if kept is not None and kept[0] == stamp:
             return kept[1]
-        from hmz import machine
-
-        # Gathered where nothing keeps it: reading a run must not leave a file in it.
-        with tempfile.TemporaryDirectory(dir=machine()) as scratch:
-            _, document = self.hmz(ran).epics.traced(
-                ran.at, output=Path(scratch) / "trace.json"
-            )
-        said = sessions_of(document)
+        said = self.hmz(ran).epics.transcripts(ran.at)
         # Kept only for a run that has ended, whose logs are done being written, and only the
         # last few: what a page reads it holds itself.
         if ran.ended:
@@ -285,47 +277,67 @@ def refused(why: ValueError) -> Refusal:
     return Refusal(sentence)
 
 
-def held_by(runs: list[Ran], running: dict[str, dict[str, Any]]) -> set[Path]:
+def held_by(
+    runs: list[Ran], running: list[dict[str, Any]]
+) -> dict[Path, dict[str, str]]:
     """Which of the runs written down are the runs the hosts are going with now.
 
-    A host says what it started and when -- or, asked from outside, which flow -- and the epic
-    says what it was opened for, where and when: the newest run of that flow, in that
-    workspace, on that task and opened within a moment of that start where those are said,
-    and not yet ended, is it.
+    A host says which epic it writes, once it writes one. Before then it says what it started
+    and when -- or, asked from outside, which flow -- and the epic says what it was opened
+    for, where and when: the newest run of that flow, in that workspace, on that task and
+    opened within a moment of that start where those are said, and not yet ended, is it.
 
     Args:
       runs: The runs, newest first.
-      running: What each host says runs, by its workspace.
+      running: What each host says runs, with its `workspace` and its `slot`.
 
     Returns:
-      Each run going, by its epic.
+      Each run going, by its epic: where it is in its turn where it is a chat, or "", and the
+      slot of the host going with it.
     """
-    held: set[Path] = set()
-    for workspace, standing in running.items():
+    held: dict[Path, dict[str, str]] = {}
+    for standing in running:
+        workspace, epic = standing["workspace"], standing.get("epic")
         started = float(standing.get("at") or 0.0)
         for ran in runs:
-            if ran.ended or ran.flow != standing.get("flow"):
+            if ran.ended or _resolved(ran.workspace) != workspace or ran.at in held:
                 continue
-            if _resolved(ran.workspace) != workspace:
+            if epic and ran.name != epic:
                 continue
-            if standing.get("task") and ran.task != standing.get("task"):
+            if not epic and ran.flow != standing.get("flow"):
                 continue
-            if started and abs(_epoch(ran.began) - started) > _SAME:
+            if not epic and standing.get("task") and ran.task != standing.get("task"):
                 continue
-            held.add(ran.at)
+            if not epic and started and abs(_epoch(ran.began) - started) > _SAME:
+                continue
+            held[ran.at] = {
+                "turn": str(standing.get("turn") or ""),
+                "slot": str(standing.get("slot") or ""),
+            }
             break
     return held
 
 
-def row(ran: Ran, *, held: bool, going: bool = False) -> dict[str, Any]:
+def row(
+    ran: Ran, *, held: bool, going: bool = False, turn: str = "", slot: str = ""
+) -> dict[str, Any]:
     """One run as the list says it.
 
     Args:
       ran: The run.
       held: Whether it is the run a host is going with, which the page follows live.
       going: Whether it is going at all, held by a host or by any other process.
+      turn: Of a chat a host is going with, where it is in its turn, or "" where unknown.
+      slot: Of a run a host is going with, which of its workspace's hosts that is: "" for
+        the workspace's own, `chat:<hex>` for a chat's.
     """
+    from hmz.runtime.epic import RUNNING, UNFINISHED, ending
+
     first = ran.task.strip().splitlines()[0] if ran.task.strip() else ""
+    how = ending(ran, going=held or going)
+    if ran.flow == CHAT and how in (RUNNING, UNFINISHED, "stopped"):
+        # A chat is going while its agent answers, and done between turns or once over.
+        how = RUNNING if how == RUNNING and turn != DONE else DONE
     return {
         "name": ran.name,
         "workspace": _resolved(ran.workspace),
@@ -333,7 +345,7 @@ def row(ran: Ran, *, held: bool, going: bool = False) -> dict[str, Any]:
         "task": first[:_TOLD] + ("…" if len(first) > _TOLD else ""),
         "began": ran.began,
         "ended": ran.ended,
-        "how": ran.how or (RUNNING if held or going else UNFINISHED),
+        "how": how,
         "agents": [
             {"name": one.name or one.agent, "role": one.agent, "runs": one.spec}
             for one in ran.agents
@@ -342,6 +354,7 @@ def row(ran: Ran, *, held: bool, going: bool = False) -> dict[str, Any]:
         "resumable": ran.resumable,
         "spent": labelled(ran.spent),
         "held": held,
+        "slot": slot,
         "backup": list(ran.backup),
         "backed": ran.backed,
     }
@@ -365,7 +378,14 @@ def labelled(spent: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def detail(
-    ran: Ran, *, held: bool, picks_up: bool, foreign: str = "", going: bool = False
+    ran: Ran,
+    *,
+    held: bool,
+    picks_up: bool,
+    foreign: str = "",
+    going: bool = False,
+    turn: str = "",
+    slot: str = "",
 ) -> dict[str, Any]:
     """One run, whole, as its own page says it.
 
@@ -375,8 +395,10 @@ def detail(
       going: Whether it is going at all, held by a host or by any other process.
       picks_up: Whether it can be picked up.
       foreign: Why one imported cannot be picked up here, or "".
+      turn: Of a chat a host is going with, where it is in its turn, or "" where unknown.
+      slot: Of a run a host is going with, which of its workspace's hosts that is.
     """
-    return row(ran, held=held, going=going) | {
+    return row(ran, held=held, going=going, turn=turn, slot=slot) | {
         "at": str(ran.at),
         "task": ran.task,
         "ref": ran.ref,
@@ -411,7 +433,10 @@ def detail(
         "params": ran.params,
         "budget": ran.budget,
         "picked_up": ran.picked_up,
-        "profile": ran.profile,
+        # The sessions it opened before it was last carried on, which are its earlier ones.
+        "earlier": sum(1 for one in ran.sessions if one.at < ran.reopened),
+        "profile_flow": ran.profile_flow,
+        "profile_environment": ran.profile_environment,
         "picks_up": picks_up,
         "foreign": foreign,
     }
@@ -432,99 +457,6 @@ def calls(called: tuple[Called, ...]) -> list[dict[str, Any]]:
     ]
 
 
-def sessions_of(document: dict[str, Any]) -> list[dict[str, Any]]:
-    """What each session of a trace said and did, in the order it did it.
-
-    Args:
-      document: The trace, as `Epics.traced` gathers one.
-
-    Returns:
-      Each session that did anything: its key, the agent it was of as the trace names
-      agents, and its actions -- turns, model calls, tools, words and the rest -- each with
-      when it started, how long it took, and what it carried.
-    """
-    agents: dict[int, str] = {}
-    held: dict[str, dict[str, Any]] = {}
-    acted: dict[str, list[dict[str, Any]]] = {}
-    events: list[dict[str, Any]] = list(document.get("traceEvents") or ())
-    for event in events:
-        if event.get("ph") == "M" and event.get("name") == "process_name":
-            named: dict[str, Any] = event.get("args") or {}
-            agents[int(event.get("pid") or 0)] = str(named.get("name") or "")
-    for event in events:
-        args: dict[str, Any] = dict(event.get("args") or {})
-        if event.get("ph") != "X" or event.get("cat") in ("session", "process"):
-            continue
-        key = str(args.pop("session", "") or "")
-        if not key:
-            continue
-        if key not in held:
-            held[key] = {
-                "key": key,
-                "agent": agents.get(int(event.get("pid") or 0), ""),
-            }
-        acted.setdefault(key, []).append(
-            {
-                "category": str(event.get("cat") or ""),
-                "name": str(event.get("name") or ""),
-                "at": str(args.pop("at", "") or ""),
-                "start": float(event.get("ts") or 0) / 1e6,
-                "seconds": float(event.get("dur") or 0) / 1e6,
-                "args": args,
-            }
-        )
-    for key, actions in acted.items():
-        actions.sort(key=lambda action: float(action["start"]))
-        held[key]["actions"] = actions
-    return sorted(held.values(), key=lambda one: one["actions"][0]["start"])
-
-
-def spending(runs: list[Ran], days: int, now: datetime.datetime) -> dict[str, Any]:
-    """What the runs of the last few days spent, by day and by flow, as the epics say.
-
-    Args:
-      runs: The runs, newest first.
-      days: How many days back, counting today.
-      now: When today is, in UTC.
-
-    Returns:
-      The days, oldest first, each with what its runs spent; the flows, the costliest
-      first; how the runs ended; and the whole of it. A run that has not said what it spent
-      -- still going, or killed before it could -- is counted as a run and nothing else.
-    """
-    first = (now - datetime.timedelta(days=days - 1)).date()
-    by_day: dict[str, dict[str, Any]] = {
-        (first + datetime.timedelta(days=step)).isoformat(): _nothing()
-        for step in range(days)
-    }
-    by_flow: dict[str, dict[str, Any]] = {}
-    ended: dict[str, int] = {}
-    whole = _nothing()
-    for ran in runs:
-        when = _when(ran.began)
-        if when is None or when.date() < first:
-            continue
-        for into in (
-            by_day.setdefault(when.date().isoformat(), _nothing()),
-            by_flow.setdefault(ran.flow, _nothing()),
-            whole,
-        ):
-            _add(into, ran)
-        how = ran.how or UNFINISHED
-        ended[how] = ended.get(how, 0) + 1
-    return {
-        "days": [{"day": day} | _said(one) for day, one in sorted(by_day.items())],
-        "flows": [
-            {"flow": flow} | _said(one)
-            for flow, one in sorted(
-                by_flow.items(), key=lambda item: (-item[1]["cost"], item[0])
-            )
-        ],
-        "ended": ended,
-        "whole": _said(whole),
-    }
-
-
 def _said(one: dict[str, Any]) -> dict[str, Any]:
     """What some runs spent, with each figure also said as the terminal interface says it."""
     return one | {
@@ -532,18 +464,6 @@ def _said(one: dict[str, Any]) -> dict[str, Any]:
         for key, value in (labelled(one) or {}).items()
         if key in ("money", "tokens", "worked")
     }
-
-
-def _nothing() -> dict[str, Any]:
-    return {"runs": 0, "cost": 0.0, "output_tokens": 0, "seconds": 0.0}
-
-
-def _add(into: dict[str, Any], ran: Ran) -> None:
-    into["runs"] += 1
-    spent = ran.spent or {}
-    into["cost"] += float(spent.get("cost") or 0.0)
-    into["output_tokens"] += int(spent.get("output_tokens") or 0)
-    into["seconds"] += float(spent.get("seconds") or 0.0)
 
 
 def _stamp(epic: Path) -> tuple[int, int]:
@@ -571,27 +491,34 @@ def _epoch(stamp: str) -> float:
 
 
 def _listed(asked: Asked) -> dict[str, Any]:
+    from hmz.runtime.epic import found
+
     runs = asked.site.runs.all(asked.query.get("workspace", ""))
     held = held_by(runs, asked.site.places.running())
-    status = asked.query.get("status", "")
-    flow = asked.query.get("flow", "")
-    wanted = asked.query.get("q", "").casefold()
-    rows = [
-        row(ran, held=ran.at in held, going=asked.site.runs.going(ran)) for ran in runs
+    went = [
+        (
+            ran,
+            row(
+                ran,
+                held=ran.at in held,
+                going=asked.site.runs.going(ran),
+                **held.get(ran.at, {}),
+            ),
+        )
+        for ran in runs
     ]
     counts: dict[str, int] = {}
-    for one in rows:
+    for _, one in went:
         counts[one["how"]] = counts.get(one["how"], 0) + 1
     shown = [
         one
-        for one in rows
-        if (not status or one["how"] == status)
-        and (not flow or one["flow"] == flow)
-        and (
-            not wanted
-            or any(
-                wanted in str(one[part]).casefold() for part in ("task", "flow", "name")
-            )
+        for ran, one in went
+        if found(
+            ran,
+            one["how"],
+            how=asked.query.get("status", ""),
+            flow=asked.query.get("flow", ""),
+            text=asked.query.get("q", ""),
         )
     ]
     try:
@@ -605,7 +532,7 @@ def _listed(asked: Asked) -> dict[str, Any]:
         "offset": offset,
         "limit": limit,
         "counts": counts,
-        "flows": sorted({one["flow"] for one in rows}),
+        "flows": sorted({ran.flow for ran in runs}),
     }
 
 
@@ -622,6 +549,7 @@ def _one(asked: Asked) -> dict[str, Any]:
         picks_up=picks_up,
         foreign=foreign,
         going=runs.going(ran),
+        **held.get(ran.at, {}),
     ) | {"calls": calls(hmz.epics.tree(ran.at))}
 
 
@@ -722,9 +650,16 @@ def _usage(asked: Asked) -> dict[str, Any]:
         days = min(365, max(1, int(asked.query.get("days", "30"))))
     except ValueError as why:
         raise Refusal("days is a whole number.") from why
-    now = datetime.datetime.now(datetime.UTC)
-    runs = asked.site.runs.all(asked.query.get("workspace", ""))
-    return {"days_back": days} | spending(runs, days, now)
+    from hmz.runtime.epic import spending
+
+    said = spending(asked.site.runs.all(asked.query.get("workspace", "")), days)
+    return {
+        "days_back": days,
+        "days": [_said(one) for one in said["days"]],
+        "flows": [_said(one) for one in said["flows"]],
+        "ended": said["ended"],
+        "whole": _said(said["whole"]),
+    }
 
 
 #: What a page reads of the runs written down here.
