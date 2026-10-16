@@ -539,29 +539,32 @@ booked it.
 
 **10.11** A broker holding booked meetings MUST introduce no ticket that was not booked with it.
 
-**10.12** A broker holding booked meetings MUST turn away an address that holds 64 connections
-which have not presented a ticket it admits, and a ticket with 64 meetings waiting.
+**10.12** A broker holding booked meetings MUST turn away a connection from an address that
+already holds 64 connections which have not presented a ticket it admits, other than the
+address it listens on and `127.0.0.1`, and a half for a ticket with 64 meetings waiting.
 
 **10.13** Each anchoring half MUST state at the meeting the directories it asks to be served, and
 a standing serving half MUST serve that session those alone, each resolved through what it
 exports.
 
-**10.14** A standing serving half MUST read its meeting from the file `--peer-file` names, so that
-its ticket is on no command line.
+**10.14** A standing serving half MUST read its meeting from the file `--peer-file` names, and
+its ticket MUST NOT appear on any command line.
 
 **10.15** A sealed meeting MUST carry every byte of every connection it has, to the broker,
 punched and relayed, inside TLS 1.3, from the first byte.
 
-**10.16** A peer of a sealed meeting presenting a certificate other than the pinned one, or none,
-or a connection that is not TLS, MUST be closed before anything is said on it.
+**10.16** On a sealed meeting, the TLS client of a connection MUST close it, before anything is
+said on it, where its TLS server presents a certificate other than the pinned one or none; the
+TLS server of a connection MUST close it, before anything is said on it, where it does not open
+with a TLS handshake.
 
 **10.17** A broker given `tls=` MUST NOT speak in the clear.
 
 **10.18** On a punched socket of a sealed meeting the anchoring half MUST be the TLS server,
 whichever end dialled, and the serving half only ever a client.
 
-**10.19** What a half proves on a punched socket MUST be bound to its role, so that it does not
-prove the other half.
+**10.19** What a half proves on a punched socket MUST be bound to its role, and MUST NOT prove a
+half of the other role.
 
 **10.20** The broker a process holds for booked meetings MUST be sealed, with no setting that
 unseals it.
