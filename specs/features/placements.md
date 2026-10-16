@@ -64,6 +64,15 @@ directory in which that conversation was held (`features/agents.md`).
 **2.13** **Mirrored session**: a session whose harness location is `standalone`, or whose
 harness location is `local` and env location `standalone`.
 
+**2.14** **Booked meeting**: a meeting that a process registers with a broker of its own before
+either half arrives, with one ticket for the serving half and another for the anchoring halves.
+
+**2.15** **Sealed meeting**: a meeting named with `?tls=DIR`, held over TLS pinned to the one
+certificate `DIR/cert.pem` holds.
+
+**2.16** **Standing serving half**: a serving half started with `--peer-file`, which goes back to
+its meeting each time it is met and serves every session met there.
+
 ## 3. Env location and harness location
 
 ### 3.1 Definition of each
@@ -474,7 +483,7 @@ Python at `PATH`, absolute or under `~/`, before any other.
 **9.1.11** `tcp://HOST:PORT` MUST name a serving half listening at that address.
 
 **9.1.12** `peer://TICKET@HOST:PORT[?tls=DIR]` MUST name a serving half waiting at the broker
-at `HOST:PORT` under `TICKET`; with `DIR`, at a sealed meeting (§10.8) pinned to the
+at `HOST:PORT` under `TICKET`; with `DIR`, at a sealed meeting (§2.15) pinned to the
 certificate in `DIR`.
 
 **9.1.13** A `peer://` target given together with a harness machine other than this machine
@@ -511,14 +520,52 @@ exported tree.
 **10.6** A token MUST NOT appear on any command line; a process hmz spawns with one MUST name a
 file that only the user can read.
 
-**10.7** A broker ticket MUST be unguessable, MUST be the whole of what authenticates a peer at
-the broker, and MUST pair only the two halves presenting it.
+**10.7** A broker ticket MUST be unguessable and MUST pair only the two halves presenting it;
+for a meeting that is not booked, it MUST be the whole of what authenticates a peer at the
+broker.
 
-**10.8** A sealed meeting MUST carry every byte of every connection it has -- to the broker,
-punched and relayed -- inside TLS 1.3 pinned to its one certificate, said before anything else
-and with no switch to say it in the clear; a peer presenting any other certificate, or none,
-MUST be told nothing. The key MUST stay on the broker's machine, which MUST make it for the run,
-readable by its own user alone and never on a filesystem another machine mounts; the anchoring
-half MUST serve it on a punched socket, and what one half proves there MUST NOT prove the other.
-The broker a process holds for booked meetings, which a dialling swarm task meets, MUST be
-sealed.
+**10.8** A meeting MUST take no further half once it has both, and a half arriving where one of
+its own role already waits MUST wait behind it, to be met in turn.
+
+**10.9** A booked meeting's serving ticket MUST admit a serving half alone, and only the one that
+first came with it, which MUST prove itself at every later meeting by a key it chose and never
+wrote down.
+
+**10.10** A booked meeting's anchoring ticket MUST NOT leave the machine of the process that
+booked it.
+
+**10.11** A broker holding booked meetings MUST introduce no ticket that was not booked with it.
+
+**10.12** A broker holding booked meetings MUST turn away an address that holds 64 connections
+which have not presented a ticket it admits, and a ticket with 64 meetings waiting.
+
+**10.13** Each anchoring half MUST state at the meeting the directories it asks to be served, and
+a standing serving half MUST serve that session those alone, each resolved through what it
+exports.
+
+**10.14** A standing serving half MUST read its meeting from the file `--peer-file` names, so that
+its ticket is on no command line.
+
+**10.15** A sealed meeting MUST carry every byte of every connection it has, to the broker,
+punched and relayed, inside TLS 1.3, from the first byte.
+
+**10.16** A peer of a sealed meeting presenting a certificate other than the pinned one, or none,
+or a connection that is not TLS, MUST be closed before anything is said on it.
+
+**10.17** A broker given `tls=` MUST NOT speak in the clear.
+
+**10.18** On a punched socket of a sealed meeting the anchoring half MUST be the TLS server,
+whichever end dialled, and the serving half only ever a client.
+
+**10.19** What a half proves on a punched socket MUST be bound to its role, so that it does not
+prove the other half.
+
+**10.20** The broker a process holds for booked meetings MUST be sealed, with no setting that
+unseals it.
+
+**10.21** The key and certificate of that broker MUST be made for the process holding it, in the
+directory `api/files/machine.md` §7.8 specifies, the key readable by the user alone from the
+moment it is written.
+
+**10.22** The serving half of a booked meeting MUST be handed the certificate alone, never the
+key.

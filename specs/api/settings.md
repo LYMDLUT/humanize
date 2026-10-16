@@ -460,6 +460,10 @@ consisting of letters, digits, `.`, `_` and `-`.
 **8.5.5** `nodes` MUST be a mapping from a node's host name, of the form of §8.3.2, to the name of
 an ssh runtime or an ssh destination `[<user>@]<host>[:<port>]`.
 
+**8.5.6** `dial_back` MUST be empty or a host name or IPv4 address, consisting of letters, digits,
+`_`, `.` and `-`, at which the swarm's nodes reach this machine (`features/environments.md`
+§8.12); empty MUST mean that tasks are reached as §8.10 of that specification states.
+
 ### 8.6 `apple-container`
 
 **8.6.1** An Apple container runtime MUST have exactly the fields `image`, `run_args`, `cpus`,
