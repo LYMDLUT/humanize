@@ -212,7 +212,7 @@ error and exit.
 ```text
 hmz exec -f <ref> [-a <agents>]... [-e <envs>]... [-p <params>]...
          [--profile-flow] [--profile-environment] [--resume] [--json]
-         [--backup <target>]... [--] <task>
+         [--backup <target>]... [--carry-on <key>=<conversation>]... [--] <task>
 ```
 
 **7.1.1** `hmz exec` MUST run the flow `<ref>` names, in the current directory as its workspace,
@@ -227,7 +227,7 @@ option, and each MUST be accepted any number of times.
 **7.1.4** `--profile-flow`, `--profile-environment`, `--resume` and `--json` MUST each be a flag
 that takes no value.
 
-**7.1.5** `--backup` MUST be accepted any number of times.
+**7.1.5** `--backup` and `--carry-on` MUST each be accepted any number of times.
 
 **7.1.6** `<task>` MUST be exactly one positional argument; a task that begins with `-` MUST be
 given after `--`.
@@ -479,6 +479,8 @@ harness setting of its env's runtime says (`features/placements.md`).
 
 **7.7.13** `hmz exec` MUST refuse a skill a role names that cannot be found or fetched.
 
+**7.7.14** `hmz exec` MUST refuse a `--carry-on` that §7.9 cannot satisfy.
+
 > Informative: `hmz exec: error: aot needs an agent for 'coder'; specify each with -a
 > ROLE=CLI/MODEL:EFFORT`; `hmz exec: error: aot requires a budget: specify with -p
 > budget.cost=...,budget.duration=...,budget.output_tokens=...`.
@@ -493,7 +495,16 @@ harness setting of its env's runtime says (`features/placements.md`).
 `hmz exec: <runtime> cannot hold '<role>': <reason>; using <runtime>` to standard error, each
 `<runtime>` written as `<backend>:<name>`.
 
-### 7.9 Resuming
+### 7.9 Resuming and carrying on
+
+```abnf
+carry-on     = key "=" conversation
+key          = 1*( %x21-3C / %x3E-7E )
+conversation = epic "/" agent "/" n
+epic         = <an epic name, or the path of an epic directory>
+agent        = 1*( %x21-2E / %x30-7E )
+n            = %x31-39 *DIGIT
+```
 
 **7.9.1** With `--resume`, `hmz exec` MUST pick up the newest epic of the same flow in this
 workspace that saved progress and is not still running (`features/epics.md`).
@@ -502,6 +513,30 @@ workspace that saved progress and is not still running (`features/epics.md`).
 no epic in this workspace that can be picked up.
 
 **7.9.3** Without `--resume`, every epic MUST start from the beginning.
+
+**7.9.4** Each `--carry-on <key>=<conversation>` MUST carry on, in the epic `hmz exec` starts,
+the conversation of the `<n>`th session that the agent named `<agent>` opened in `<epic>`, under
+the state key `<key>` (`features/epics.md` §3.8).
+
+**7.9.5** `hmz exec` MUST read `<epic>` as the epic of that name in this workspace where there is
+one, and as the path of an epic directory otherwise.
+
+**7.9.6** `hmz exec` MUST read a `<conversation>` from its last two `/`, so that `<epic>` MAY be a
+path holding `/`.
+
+**7.9.7** A `--carry-on` without `=`, with an empty `<key>`, or naming a `<key>` an earlier
+`--carry-on` of the line names MUST be a usage error.
+
+**7.9.8** `hmz exec` MUST refuse a `--carry-on` whose `<conversation>` does not match
+`conversation`, and every `--carry-on` `features/epics.md` §3.8.7 refuses, before the epic
+starts.
+
+**7.9.9** `--carry-on` MAY be given together with `--resume`; the value it names MUST then replace
+the value the picked-up flow state holds under `<key>`.
+
+> Informative: `hmz exec -f prove --carry-on session=20261016T120000.000Z-a1b2c3/Ada/1 -- go on`
+> starts a new epic whose flow reads `ctx.state["session"]` as a session that carries on Ada's
+> first conversation of that epic.
 
 ### 7.10 Profiling
 
