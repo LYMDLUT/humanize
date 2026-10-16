@@ -318,12 +318,17 @@ condition failed.
 **3.8.1** Carrying a conversation on MUST be available only for an epic of a resumable flow.
 
 **3.8.2** The source MUST be named by an epic and a session of it: an epic name of the current
-workspace or the path of an epic directory, and the `<n>`th session, counting from 1 in the order
-they were opened, that the agent of a name opened in it.
+workspace or the path of an epic directory, absolute or relative to the workspace, and the
+`<n>`th session, counting from 1 in the order they were opened, that the agent of a name opened
+in it.
 
-**3.8.3** hmz MUST copy the files of the conversation of the named session, as the source's epic
-directory holds them when the epic begins, into the epic directory of the new epic
-(`api/files/epics.md` §9.7), and MUST NOT modify the source.
+**3.8.3** hmz MUST copy the files of the conversation of the named session, as they are when the
+epic begins, from where the source's record of that session says it is kept, into the epic
+directory of the new epic (`api/files/epics.md` §9.7), and MUST NOT modify the source.
+
+> Informative: the record says the source's epic directory for a session a turn kept there, and
+> the harness's home for one the source kept no copy of, as on macOS or with
+> `HUMANIZE_SESSIONS=off`.
 
 **3.8.4** The copy MUST hold the files of that conversation and of every conversation it was
 forked from that the source keeps, and no other file of the source or of any harness home.
@@ -338,14 +343,23 @@ its process was killed.
 **3.8.7** hmz MUST refuse to carry a conversation on, stating the reason and starting no epic,
 where the flow is not resumable, where the source is not found, where the source is running,
 where the source opened no such session, where the session's harness kept it on a machine other
-than this machine, where the source no longer holds the conversation, or where the new epic has
-no agent of the same role and harness to carry it on.
+than this machine, where the source's record keeps it outside the source's epic directory and
+other than in a home of that harness, or calls it by other than a name of letters, digits, `_`,
+`.`, `:` and `-` beginning with a letter or digit, where the source no longer holds the
+conversation, where a file of the conversation is a symbolic link or is reached through one,
+where the conversation is kept in a home of that harness and a file of it is outside the
+directories that harness keeps its sessions in, or where the new epic has no agent of the same
+role and harness to carry it on.
 
 **3.8.8** An epic that picks up an epic that carried a conversation on MUST carry it on again
 from the copy of §3.8.3, as from any session written into flow state (§3.7.8).
 
 **3.8.9** Several epics MUST be able to carry on one conversation of one source, each from a copy
 of its own.
+
+**3.8.10** An epic that picks up an earlier epic and carries a conversation on under a key MUST
+hold, under that key, the kept session of §3.8.5 in place of what the picked-up flow state held
+under it.
 
 ## 4. Workspaces
 

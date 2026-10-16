@@ -140,6 +140,8 @@ def test_repeated_flags_add_up_in_order() -> None:
         (["-f", "x", "--backup", "lab", "--backup", "none", "t"], "names no target"),
         (["-f", "x", "--carry-on", "k", "t"], "expected KEY=EPIC/AGENT/N"),
         (["-f", "x", "--carry-on", "=e/a/1", "t"], "expected KEY=EPIC/AGENT/N"),
+        (["-f", "x", "--carry-on", "a key=e/a/1", "t"], "expected KEY=EPIC/AGENT/N"),
+        (["-f", "x", "--carry-on", "cl\u00e9=e/a/1", "t"], "expected KEY=EPIC/AGENT/N"),
         (
             ["-f", "x", "--carry-on", "k=e/a/1", "--carry-on", "k=e/a/2", "t"],
             "--carry-on k: given twice",
@@ -701,8 +703,13 @@ def _earlier(
     backend: str = "claude",
     harness: str = "",
     opened: int = 1,
+    where: str = "",
+    session: str = "",
 ) -> Path:
-    """An epic that ran, its builder named NeiKos496, and the conversations it kept."""
+    """An epic that ran, its builder named NeiKos496, and the conversations it kept.
+
+    Its record may say a conversation is kept `where` else, or call it `session`.
+    """
     at = tmp_path / "earlier"
     at.mkdir()
     agents = [
@@ -716,8 +723,8 @@ def _earlier(
                 "agent": "NeiKos496",
                 "backend": backend,
                 "provider": "local",
-                "session": f"s{number}",
-                "where": f"sessions/{backend}",
+                "session": session or f"s{number}",
+                "where": where or f"sessions/{backend}",
                 "at": f"2026-10-16T00:00:0{number}Z",
                 **({"harness": harness} if harness else {}),
             }
@@ -739,7 +746,20 @@ def kept_(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str]]:
         return sorted(path for path in Path(kept).rglob("*") if ident in path.name)
 
     def named(backend: str) -> object:
-        return type("Profile", (), {"name": backend})() if backend == "claude" else None
+        if backend != "claude":
+            return None
+        home = Path("/nonexistent/home/.claude")
+
+        def directory(_: object) -> Path:
+            return home
+
+        said = {
+            "name": backend,
+            "home_in": "",
+            "home_dir": ".claude",
+            "sessions": ("projects", "todos"),
+        }
+        return type("Profile", (), {**said, "directory": directory})()
 
     monkeypatch.setattr(coganchor_agents, "conversation", conversation)
     monkeypatch.setattr(backends, "named", named)
@@ -801,6 +821,26 @@ def test_an_earlier_epic_is_named_in_the_workspace_or_by_its_directory(
     [
         ("{at}/NeiKos496", {}, "expected EPIC/AGENT/N, N counting from 1"),
         ("{at}/NeiKos496/0", {}, "expected EPIC/AGENT/N"),
+        # N in ASCII digits, from 1, as `api/cli.md` §7.9 spells it; and an agent's name
+        # without a space.
+        ("{at}/NeiKos496/\u00b2", {}, "expected EPIC/AGENT/N"),
+        ("{at}/NeiKos496/01", {}, "expected EPIC/AGENT/N"),
+        ("{at}/NeiKos496/\uff11", {}, "expected EPIC/AGENT/N"),
+        ("{at}/Nei Kos/1", {}, "expected EPIC/AGENT/N"),
+        # A record keeping it somewhere that is neither the epic nor the CLI's home, or
+        # calling it by what is not a name.
+        (
+            "{at}/NeiKos496/1",
+            {"where": "/etc"},
+            "is kept as 's1' at /etc, which is neither",
+        ),
+        (
+            "{at}/NeiKos496/1",
+            {"where": "../../../etc"},
+            "which is neither a conversation's name nor in it",
+        ),
+        ("{at}/NeiKos496/1", {"session": "../s1"}, "is kept as '../s1'"),
+        ("{at}/NeiKos496/1", {"session": "-"}, "is kept as '-'"),
         ("nowhere/NeiKos496/1", {}, "no epic nowhere here"),
         ("{at}/NeiKos496/2", {}, "opened no session NeiKos496/2"),
         ("{at}/somebody/1", {}, "opened no session somebody/1"),
@@ -825,6 +865,95 @@ def test_a_conversation_that_cannot_be_carried_on_is_refused(
 
     with pytest.raises(Refused, match=refused):
         _runner(carry_on={"k": named.format(at=at)}, workspace=tmp_path)
+
+
+def test_an_earlier_epic_named_by_a_relative_path_is_the_workspaces(
+    engine_: Flowing,
+    kept_: list[tuple[Path, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine_.impl.resumable = True
+    _earlier(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    _runner(carry_on={"k": "earlier/NeiKos496/1"}, workspace=tmp_path).run("t")
+
+    (said,) = engine_.ran
+    assert said["state"]["k"][SESSION]["id"] == "s1"
+
+
+def test_a_conversation_kept_in_its_clis_home_is_carried_on_from_there(
+    engine_: Flowing, kept_: list[tuple[Path, str]], tmp_path: Path
+) -> None:
+    engine_.impl.resumable = True
+    home = tmp_path / "someone" / ".claude"
+    log = home / "projects" / "p" / "s1.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text("conversation 1\n")
+    at = _earlier(tmp_path, where=str(home))
+
+    _runner(carry_on={"k": f"{at}/NeiKos496/1"}, workspace=tmp_path).run("t")
+
+    assert kept_ == [(home, "s1"), (home, "s1")]
+
+
+def test_a_record_naming_what_is_not_a_conversation_in_a_clis_home_is_refused(
+    engine_: Flowing, kept_: list[tuple[Path, str]], tmp_path: Path
+) -> None:
+    engine_.impl.resumable = True
+    home = tmp_path / "someone" / ".claude"
+    (home / "projects" / "p").mkdir(parents=True)
+    (home / ".credentials.json").write_text("{}")
+    at = _earlier(tmp_path, where=str(home), session="credentials")
+
+    with pytest.raises(Refused, match="is not where claude keeps sessions in its home"):
+        _runner(carry_on={"k": f"{at}/NeiKos496/1"}, workspace=tmp_path)
+
+
+def test_a_conversation_with_a_link_among_its_files_is_refused(
+    engine_: Flowing, kept_: list[tuple[Path, str]], tmp_path: Path
+) -> None:
+    engine_.impl.resumable = True
+    at = _earlier(tmp_path)
+    secret = tmp_path / "secret"
+    secret.write_text("key")
+    (at / "sessions" / "claude" / "projects" / "p" / "s1.extra").symlink_to(secret)
+
+    with pytest.raises(Refused, match="is a link, or reached through one"):
+        _runner(carry_on={"k": f"{at}/NeiKos496/1"}, workspace=tmp_path)
+
+
+def test_a_conversation_is_checked_again_as_it_is_copied(
+    engine_: Flowing,
+    kept_: list[tuple[Path, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine_.impl.resumable = True
+    at = _earlier(tmp_path)
+    runner = _runner(carry_on={"k": f"{at}/NeiKos496/1"}, workspace=tmp_path)
+    # Picked up again after this run was set up, and before it started.
+    was = epic.going
+
+    def going(one: Path) -> bool:
+        return one == at or was(one)
+
+    monkeypatch.setattr(epic, "going", going)
+
+    with pytest.raises(Refused, match="earlier is running again"):
+        runner.run("t")
+    assert engine_.ran == []
+    monkeypatch.setattr(epic, "going", was)
+    log = at / "sessions" / "claude" / "projects" / "p" / "s1.jsonl"
+    log.unlink()
+    log.with_suffix(".extra").symlink_to(tmp_path / "elsewhere")
+
+    with pytest.raises(Refused, match="is a link, or reached through one"):
+        runner.run("t")
+    assert engine_.ran == []
 
 
 def test_an_earlier_epic_still_going_is_not_carried_on_from(

@@ -479,7 +479,8 @@ harness setting of its env's runtime says (`features/placements.md`).
 
 **7.7.13** `hmz exec` MUST refuse a skill a role names that cannot be found or fetched.
 
-**7.7.14** `hmz exec` MUST refuse a `--carry-on` that §7.9 cannot satisfy.
+**7.7.14** `hmz exec` MUST refuse a `--carry-on` that §7.9.7 or `features/epics.md` §3.8.7
+refuses.
 
 > Informative: `hmz exec: error: aot needs an agent for 'coder'; specify each with -a
 > ROLE=CLI/MODEL:EFFORT`; `hmz exec: error: aot requires a budget: specify with -p
@@ -514,25 +515,20 @@ no epic in this workspace that can be picked up.
 
 **7.9.3** Without `--resume`, every epic MUST start from the beginning.
 
-**7.9.4** Each `--carry-on <key>=<conversation>` MUST carry on, in the epic `hmz exec` starts,
-the conversation of the `<n>`th session that the agent named `<agent>` opened in `<epic>`, under
-the state key `<key>` (`features/epics.md` §3.8).
+**7.9.4** Each `--carry-on <key>=<conversation>` MUST carry a conversation on in the epic
+`hmz exec` starts, as `features/epics.md` §3.8 specifies, `<epic>`, `<agent>` and `<n>` naming
+its source and session (§3.8.2 there) and `<key>` its state key (§3.8.5 there).
 
-**7.9.5** `hmz exec` MUST read `<epic>` as the epic of that name in this workspace where there is
-one, and as the path of an epic directory otherwise.
+**7.9.5** `hmz exec` MUST read `<agent>` and `<n>` from after the last two `/` of a
+`<conversation>`, and `<epic>` from before them.
 
-**7.9.6** `hmz exec` MUST read a `<conversation>` from its last two `/`, so that `<epic>` MAY be a
-path holding `/`.
+**7.9.6** A `--carry-on` without `=`, with a `<key>` that does not match `key`, or naming a
+`<key>` an earlier `--carry-on` of the line names MUST be a usage error.
 
-**7.9.7** A `--carry-on` without `=`, with an empty `<key>`, or naming a `<key>` an earlier
-`--carry-on` of the line names MUST be a usage error.
+**7.9.7** `hmz exec` MUST refuse a `--carry-on` whose `<conversation>` does not match
+`conversation`, before the epic starts.
 
-**7.9.8** `hmz exec` MUST refuse a `--carry-on` whose `<conversation>` does not match
-`conversation`, and every `--carry-on` `features/epics.md` §3.8.7 refuses, before the epic
-starts.
-
-**7.9.9** `--carry-on` MAY be given together with `--resume`; the value it names MUST then replace
-the value the picked-up flow state holds under `<key>`.
+**7.9.8** `--carry-on` MAY be given together with `--resume` (`features/epics.md` §3.8.10).
 
 > Informative: `hmz exec -f prove --carry-on session=20261016T120000.000Z-a1b2c3/Ada/1 -- go on`
 > starts a new epic whose flow reads `ctx.state["session"]` as a session that carries on Ada's

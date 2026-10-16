@@ -11,7 +11,12 @@ put back to a copy of it.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
+import subprocess
 import sys
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,7 +26,6 @@ from hmz.sdk import Hmz
 from tests.integration.doubles_core import AGENT, hmz_exec, install, started, write_flow
 
 if TYPE_CHECKING:
-    import subprocess
     from pathlib import Path
 
 #: A flow that keeps its session in its state, and goes on with it as `then` says; a run picking
@@ -265,6 +269,88 @@ def test_a_conversation_carried_on_is_carried_on_again_by_a_run_picking_that_one
     _went_on(tmp_path, told)
 
 
+def test_a_conversation_carried_on_is_carried_on_again_by_an_epic_naming_that_one(
+    tmp_path: Path, project: Path
+) -> None:
+    earlier, name, _ = _talked(tmp_path, project)
+    _said(_carries(tmp_path, "second", "--carry-on", f"earlier={earlier.name}/{name}"))
+    epics = Hmz(project).epics
+    middle = epics.all()[-1]
+    ran = epics.read(middle)
+    assert ran is not None
+    (session,) = ran.sessions
+
+    said = _said(
+        _carries(
+            tmp_path,
+            "third",
+            "--carry-on",
+            f"earlier={middle.name}/{session.agent}/1",
+        )
+    )
+
+    assert said == "did: third: what was the word?"
+    _went_on(tmp_path, session.ident)
+
+
+#: The same, but a flow whose second turn never ends, for its epic to be killed in.
+HANGS = CARRIES.replace(
+    'said = await worker.run("the word is papaya", session=session)',
+    'said = await worker.run("the word is papaya", session=session)\n'
+    '    said = await worker.run(\'run: [["sleep", "300"]]\', session=session)',
+)
+
+
+def test_a_conversation_is_carried_on_from_an_epic_killed_in_the_middle_of_a_turn(
+    tmp_path: Path, project: Path
+) -> None:
+    write_flow(tmp_path / "flows", "carries", HANGS)
+    killed = subprocess.Popen(
+        [
+            *(sys.executable, "-m", "hmz", "exec"),
+            *("-f", str(tmp_path / "flows" / "carries"), "-a", f"worker={AGENT}"),
+            *("-e", f"there=local/{tmp_path / 'there'}", "-p", "budget.cost=1"),
+            "talk",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 90
+        while not any(
+            b"sleep" in one.read_bytes()
+            for one in tmp_path.rglob("*.jsonl")
+            if one.is_file()
+        ):
+            assert time.monotonic() < deadline, "the turn that never ends never began"
+            time.sleep(0.5)
+        # hmz alone, as a machine going down or an OOM kill takes it: no exit of its own.
+        os.kill(killed.pid, signal.SIGKILL)
+        killed.wait()
+        epics = Hmz(project).epics
+        earlier = epics.all()[-1]
+        ran = epics.read(earlier)
+        assert ran is not None
+        (session,) = ran.sessions
+
+        said = _said(
+            _carries(
+                tmp_path,
+                "continue",
+                "--carry-on",
+                f"earlier={earlier.name}/{session.agent}/1",
+            )
+        )
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(killed.pid, signal.SIGKILL)
+
+    assert said == "did: continue: what was the word?"
+    _went_on(tmp_path, session.ident)
+
+
 def test_a_conversation_is_carried_on_from_an_epic_whose_flow_failed(
     tmp_path: Path, project: Path
 ) -> None:
@@ -303,6 +389,7 @@ def test_a_conversation_is_carried_on_where_no_epic_keeps_sessions_of_its_own(
         ("earlier={epic}/nobody/1", "opened no session nobody/1"),
         ("earlier={epic}", "expected EPIC/AGENT/N"),
         ("earlier={epic}/{agent}/0", "expected EPIC/AGENT/N"),
+        ("earlier={epic}/{agent}/\u00b2", "expected EPIC/AGENT/N"),
         ("earlier", "expected KEY=EPIC/AGENT/N"),
     ],
 )
