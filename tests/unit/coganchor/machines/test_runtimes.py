@@ -281,6 +281,7 @@ def test_a_daemon_says_what_every_exec_into_its_containers_is_told() -> None:
         ({"name_prefix": "team/a"}, "invalid name prefix"),
         ({"name_prefix": "t" * 55}, "longer than 54 characters"),
         ({"dial_back": "10.0.0.1:9"}, "invalid dial-back address"),
+        ({"dial_back": "hôte.example"}, "invalid dial-back address"),
         ({"made": IMPORTED}, "made must be typed"),
     ],
 )

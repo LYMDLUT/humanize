@@ -657,7 +657,7 @@ class SwarmRuntime:
         _text(self.tls_dir, "the TLS directory")
         if self.image and not re.fullmatch(r"[^\s]+", self.image):
             raise ValueError(f"{self.name}: invalid image {self.image!r}")
-        if self.dial_back and not re.fullmatch(r"[\w.-]+", self.dial_back):
+        if self.dial_back and not re.fullmatch(r"[\w.-]+", self.dial_back, re.ASCII):
             raise ValueError(
                 f"{self.name}: invalid dial-back address {self.dial_back!r}: expected a "
                 "host name or an IPv4 address"

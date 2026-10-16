@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from hmz.coganchor.rendezvous import Broker, Meeting
 
 __all__ = [
+    "DIALLING",
     "Node",
     "Placed",
     "Swarm",
@@ -100,6 +101,12 @@ _POLL = 0.5
 #: How long a manager is given to create a service: it asks a registry which image that is
 #: first, so as long as the task is then given to come up.
 _MAKING = 600.0
+
+#: The most a docker config holds, as swarmkit bounds it (`MaxConfigSize`).
+_CONFIG_MOST = 1000 * 1024
+
+#: Marks a service that dials back, and so was created with what :func:`kept` names.
+DIALLING = "humanize.dial-back"
 
 
 class Unplaced(RuntimeError):  # noqa: N818 -- named for what happened, as the rest are
@@ -239,6 +246,60 @@ class Placed:
     node: Node
     container: str
     daemon: Endpoint
+
+
+def _deflated(archive: Path) -> Path:
+    """The archive with its members deflated, beside it, for a docker config to hold.
+
+    The archive is stored rather than compressed, which no target caching it is the worse
+    for; a config holds at most :data:`_CONFIG_MOST` bytes, and the archive stored is most of
+    that, deflated under a third. zipimport reads the one as it reads the other.
+
+    Args:
+      archive: The archive :func:`~hmz.coganchor.transport.bundled` built.
+
+    Returns:
+      The deflated copy, made once per archive.
+
+    Raises:
+      OSError: If it cannot be made, or is more than a config holds even deflated.
+    """
+    import zipfile
+
+    made = archive.with_name(f"{archive.stem}.deflated.pyz")
+    try:
+        os.utime(made)
+    except FileNotFoundError:
+        whole = archive.read_bytes()
+        handle, staged = tempfile.mkstemp(
+            dir=archive.parent, prefix=f"{archive.stem}.", suffix=".new"
+        )
+        try:
+            with os.fdopen(handle, "wb") as writing:
+                # Its `#!` line first, as the archive has one, and then the members.
+                writing.write(whole[: max(whole.find(b"PK\x03\x04"), 0)])
+                with (
+                    zipfile.ZipFile(archive) as stored,
+                    zipfile.ZipFile(writing, "w") as deflated,
+                ):
+                    for member in stored.infolist():
+                        held = stored.read(member)
+                        deflated.writestr(
+                            member, held, zipfile.ZIP_DEFLATED, compresslevel=9
+                        )
+            Path(staged).replace(made)
+        except BaseException:
+            Path(staged).unlink(missing_ok=True)
+            raise
+    size = made.stat().st_size
+    if size > _CONFIG_MOST:
+        raise OSError(
+            errno.EFBIG,
+            f"humanize's archive is {size} bytes deflated, more than the {_CONFIG_MOST} a "
+            "docker config holds",
+            str(made),
+        )
+    return made
 
 
 def kept(service: str) -> tuple[tuple[str, str], ...]:
@@ -647,8 +708,7 @@ class Swarm(MachineBase):
             "secret", secret, "-", str(rendezvous.Meeting(serving, host, port, _TLS))
         )
         self._create("config", sealed, str(Path(broker.tls) / rendezvous.CERTIFICATE))
-        archive, _ = bundled()
-        self._create("config", config, str(archive))
+        self._create("config", config, str(_deflated(bundled()[0])))
         bundle = f"/{config}.pyz"
         return (
             rendezvous.Meeting(anchoring, host, port, broker.tls),
@@ -851,7 +911,7 @@ class Swarm(MachineBase):
         said = {
             key: value
             for key, value in config.labels.items()
-            if key not in (_LABEL, CPUS, MEMORY, GPUS)
+            if key not in (_LABEL, CPUS, MEMORY, GPUS, DIALLING)
         }
         said[_LABEL] = str(os.getuid())
         if config.cpus is not None:
@@ -860,6 +920,8 @@ class Swarm(MachineBase):
             said[MEMORY] = str(config.memory)
         if config.generic:
             said[GPUS] = ",".join(f"{kind}={many}" for kind, many in config.generic)
+        if config.dial_back:
+            said[DIALLING] = "1"
         return [
             word
             for key, value in said.items()
@@ -876,7 +938,11 @@ class Swarm(MachineBase):
         words = iter(self._config.run_args)
         for word in words:
             if word in ("--label", "-l"):
-                said += ["--label", next(words, "")]
+                # A last `--label` with nothing after it is no label, which docker refuses
+                # the service for anyway.
+                label = next(words, "")
+                if label:
+                    said += ["--label", label]
             elif word.startswith("--label="):
                 said += ["--label", word.removeprefix("--label=")]
         return said

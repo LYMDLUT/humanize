@@ -381,10 +381,16 @@ config `<service>-tls`, each created on the manager with the service's labels an
 arguments give it.
 
 **8.15** hmz MUST remove that secret and those configs whenever it removes the service, the
-service of an earlier epic it finds left (§12.1) included, and MUST cancel the meeting.
+service of an earlier epic it finds left (§12.1) and labelled as §8.18 states included, and
+MUST cancel the meeting.
 
 **8.16** A swarm runtime naming a dial-back address MUST raise `EnvUnavailable` where `openssl`
 is not on this machine.
+
+**8.17** The archive in `<service>-hmz` MUST have its members deflated, and a service whose
+archive is more than 1,024,000 bytes so MUST NOT be created.
+
+**8.18** A service dialling back MUST carry the label `humanize.dial-back=1`.
 
 ## 9. `apple-container`
 

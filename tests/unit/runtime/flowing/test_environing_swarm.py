@@ -407,9 +407,19 @@ async def test_a_task_a_run_now_gone_left_goes_with_what_it_was_created_with(
     left = Held(
         "humanize-c-gone",
         cpus=2,
+        labels={
+            "humanize": str(os.getuid()),
+            HOST: socket.gethostname(),
+            PID: "0",
+            coganchor_swarm.DIALLING: "1",
+        },
+    )
+    older = Held(
+        "humanize-c-older",
+        cpus=2,
         labels={"humanize": str(os.getuid()), HOST: socket.gethostname(), PID: "0"},
     )
-    monkeypatch.setattr(coganchor_swarm, "services", returning([left]))
+    monkeypatch.setattr(coganchor_swarm, "services", returning([left, older]))
     monkeypatch.setattr(os, "kill", _gone)
     ran: list[list[str]] = []
 
@@ -428,6 +438,8 @@ async def test_a_task_a_run_now_gone_left_goes_with_what_it_was_created_with(
         ["secret", "rm", "humanize-c-gone-peer"],
         ["config", "rm", "humanize-c-gone-hmz"],
         ["config", "rm", "humanize-c-gone-tls"],
+        # One that did not dial back was created with nothing else.
+        ["service", "rm", "humanize-c-older"],
     ]
     await driver.close()
 

@@ -248,7 +248,7 @@ class SwarmMachine(SSHMachine):
           EnvConnectionError: If the manager, or the node the task landed on, cannot be asked.
         """
         from hmz.coganchor.machines import SwarmConfig, store
-        from hmz.coganchor.machines.swarm import services, swarm_of
+        from hmz.coganchor.machines.swarm import DIALLING, services, swarm_of
 
         where = self.spelled
         endpoint = self.endpoint
@@ -270,7 +270,9 @@ class SwarmMachine(SSHMachine):
             for one in held:
                 if _stale(one):
                     with contextlib.suppress(OSError):
-                        _removed(endpoint, one.name)
+                        _removed(
+                            endpoint, one.name, dialled=one.labels.get(DIALLING) == "1"
+                        )
                     shutil.rmtree(_mirrors(one.name), ignore_errors=True)
                 else:
                     live.append(one)
@@ -429,10 +431,16 @@ def _told(where: str) -> Generator[None]:
         raise EnvConnectionError(f"{where}: {error}") from error
 
 
-def _removed(endpoint: Endpoint, service: str) -> None:
+def _removed(endpoint: Endpoint, service: str, *, dialled: bool) -> None:
     """Removes a service a run left behind, and what a dial-back one was created with.
 
     Asking for so long at most, each.
+
+    Args:
+      endpoint: The manager.
+      service: The service.
+      dialled: Whether it dialled back, and so was created with a secret and configs of its
+        own.
 
     Raises:
       OSError: If it could not be asked.
@@ -441,7 +449,7 @@ def _removed(endpoint: Endpoint, service: str) -> None:
 
     from hmz.coganchor.machines.swarm import kept
 
-    for kind, name in (("service", service), *kept(service)):
+    for kind, name in (("service", service), *(kept(service) if dialled else ())):
         try:
             subprocess.run(
                 endpoint.docker(kind, "rm", name),

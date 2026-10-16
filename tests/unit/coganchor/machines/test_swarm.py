@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import time
+import zipfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -24,8 +26,6 @@ from hmz.coganchor.places import ISOLATED, MANAGED, REMOTE, SUPERVISED
 from hmz.coganchor.transport import Endpoint
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from tests.unit.coganchor.machines.conftest import Handshake, Runs
 
 ME = f"{os.getuid()}:{os.getgid()}"
@@ -574,7 +574,10 @@ def broker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Booking:
     """This process's broker for booked meetings, and an archive, faked."""
     booking = Booking()
     archive = tmp_path / "humanize-abc.pyz"
-    archive.write_bytes(b"PK")
+    with archive.open("wb") as writing:
+        writing.write(b"#!/usr/bin/env python3\n")
+        with zipfile.ZipFile(writing, "w") as stored:
+            stored.writestr("__main__.py", "print('served')\n" * 2000)
 
     def standing(address: str) -> tuple[Booking, int]:
         booking.asked.append(address)
@@ -594,7 +597,7 @@ def test_a_task_that_dials_back_is_met_at_a_booked_meeting_its_ticket_kept_secre
         workspace="/w",
         name="svc",
         dial_back="192.0.2.213",
-        run_args=("--label", "owner=me", "--label=team=t", "--env", "A=1"),
+        run_args=("--label", "owner=me", "--label=team=t", "--env", "A=1", "--label"),
     ).create()
 
     anchor = machine.start()
@@ -612,12 +615,18 @@ def test_a_task_that_dials_back_is_met_at_a_booked_meeting_its_ticket_kept_secre
     )
     certified, config = runs.called("config", "create")
     assert certified[-2:] == ["svc-tls", f"{SEALED}/cert.pem"]
-    assert config[-2:] == ["svc-hmz", str(swarm_module.bundled()[0])]
+    # Deflated, for a config holds at most 1000 KiB.
+    assert config[-2] == "svc-hmz"
+    assert Path(config[-1]).name == "humanize-abc.deflated.pyz"
     for one in (secret, certified, config):
         labels = after(one, "--label")
         assert {f"humanize={os.getuid()}", "owner=me", "team=t"} <= set(labels)
     assert not [one for one in runs.calls if any("key.pem" in word for word in one)]
     (made,) = runs.called("service", "create")
+    assert f"{swarm_module.DIALLING}=1" in after(made, "--label")
+    # A last `--label` with nothing after it gives the secret and configs no empty label.
+    for one in (secret, certified, config):
+        assert "" not in after(one, "--label")
     assert after(made, "--secret") == ["source=svc-peer,target=humanize-peer"]
     assert after(made, "--config") == [
         "source=svc-hmz,target=/svc-hmz.pyz",
@@ -661,6 +670,49 @@ def test_a_task_that_dials_back_is_met_only_once_it_is_started(
     assert handshake.asked == [anchor]
     assert len(runs.called("service", "create")) == 1
     machine.stop()
+
+
+def test_a_dialling_tasks_serving_half_is_handed_over_deflated_and_made_once(
+    runs: Runs, handshake: Handshake, broker: Booking, tmp_path: Path
+) -> None:
+    a_swarm(runs, task("running"))
+    for name in ("one", "two"):
+        machine = SwarmConfig(workspace="/w", name=name, dial_back="h").create()
+        machine.submit()
+        machine.stop()
+
+    handed = {
+        Path(one[-1])
+        for one in runs.called("config", "create")
+        if one[-2].endswith("-hmz")
+    }
+
+    # Made once, beside the archive, and handed to every task after.
+    (deflated,) = handed
+    stored = tmp_path / "humanize-abc.pyz"
+    assert deflated.parent == stored.parent
+    # Its `#!` line first, as the archive has one, and its members deflated.
+    assert deflated.read_bytes().startswith(b"#!/usr/bin/env python3\nPK")
+    assert deflated.stat().st_size < stored.stat().st_size // 10
+    with zipfile.ZipFile(deflated) as archive:
+        assert {one.compress_type for one in archive.infolist()} == {
+            zipfile.ZIP_DEFLATED
+        }
+
+
+def test_a_task_is_not_created_where_the_archive_is_more_than_a_config_holds(
+    runs: Runs, broker: Booking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a_swarm(runs, task("running", on="n1"), landed_on=node("n1", "box"))
+    monkeypatch.setattr(swarm_module, "_CONFIG_MOST", 10)
+    machine = SwarmConfig(
+        image="img:1", workspace="/w", name="svc", dial_back="192.0.2.213"
+    ).create()
+
+    with pytest.raises(OSError, match="more than the 10 a docker config holds"):
+        machine.start()
+
+    assert not runs.called("service", "create")
 
 
 def test_what_a_service_dialling_back_is_created_with_is_named_after_it() -> None:
