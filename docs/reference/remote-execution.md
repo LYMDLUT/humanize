@@ -273,7 +273,7 @@ srun --jobid=JOBID --overlap --nodes=1 --ntasks=1 --unbuffered --quiet --export=
 | Variable | Value | Arrangements |
 | --- | --- | --- |
 | `HUMANIZE` | the `hmz.coganchor` version | supervised, native |
-| `HUMANIZE_TARGET` | the target, as `Target.describe()` spells it | supervised, native |
+| `HUMANIZE_TARGET` | the target, as `Target.told()` spells it: `Target.describe()`, except that a `peer://` target is `peer://HOST:PORT`, without its ticket or `tls=` directory | supervised, native |
 | `HUMANIZE_WORKSPACE` | the workspace, as `workspace` names it (absolute) | supervised, native |
 | `PWD` | the mirror directory the agent starts in | supervised |
 
@@ -984,6 +984,8 @@ from hmz.coganchor.anchor import NotInstalled
 | A listening serving half without a token | loopback only |
 | A Slurm job's listening serving half (`via: tcp`) | token-authenticated, the token set in its batch script, never on a command line on the node; the traffic is not encrypted, so it stays within the cluster's network |
 | A broker port | open on every interface for the life of the process that booked a third-machine harness; pairing requires a 128-bit ticket known to exactly two machines |
+| A broker port for a swarm's `dial_back` meetings | on the `dial_back` address alone where it is this machine's, else on every interface, for the life of the process; TLS from the first byte, pinned to a certificate made for the run, and a meeting admits only the halves booked with it |
+| A meeting's ticket reaches the agent | never: `HUMANIZE_TARGET` names a `peer://` target as `peer://HOST:PORT` |
 | A mirror overwrites a directory it did not create | never without `force` |
 | A flow session's CLI starts a program its project names on a machine other than the work's | never: refused when the session opens ([a project's own programs](#a-projects-own-programs)) |
 

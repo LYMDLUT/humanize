@@ -265,6 +265,9 @@ callback over the channel hmz drives it through.
 `HUMANIZE` to hmz's version, `HUMANIZE_TARGET` to the target, and `HUMANIZE_WORKSPACE` to the
 absolute workspace path as the env machine names it, in the harness's environment.
 
+**5.5.2** For a `peer://` target, `HUMANIZE_TARGET` MUST be `peer://<host>:<port>`, without the
+meeting's ticket or its `tls=` directory.
+
 ### 5.6 Fences
 
 **5.6.1** Under harness location local and env location standalone, a fence MUST be held on both

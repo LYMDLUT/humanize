@@ -29,6 +29,7 @@ import pytest
 
 import hmz
 from hmz.coganchor import AnchorConfig, anchor, transport
+from hmz.coganchor.providers import redirect
 from hmz.coganchor.remote import RemoteClient
 from hmz.coganchor.rendezvous import (
     ANCHOR,
@@ -538,3 +539,60 @@ def test_a_serving_half_as_a_task_runs_it_serves_sealed_sessions_at_once(
         assert broker.carried == 6
     elif sys.platform == "linux":
         assert broker.carried == 0
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.skipif(
+                not (sys.platform == "linux" and redirect.supervises()),
+                reason="no turn can be supervised here",
+            ),
+        ),
+    ],
+    ids=["native", "supervised"],
+)
+def test_a_turn_at_a_booked_meeting_is_told_where_it_is_and_no_ticket(
+    sealed: Path, task: Path, tmp_path: Path, native: bool
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    broker = Broker("127.0.0.1", 0, punching=0.0, booked=True, tls=str(sealed))
+    host, port = broker.start()
+    serving, anchoring = broker.stand()
+    peer = tmp_path / "peer"
+    peer.write_text(f"{Meeting(serving, host, port, str(task))}\n")
+    process = subprocess.Popen(
+        [*SERVING_HALF, "--peer-file", str(peer), "--export", "/"],
+        stdin=subprocess.DEVNULL,
+    )
+    target = f"peer://{Meeting(anchoring, host, port, str(sealed))}"
+    try:
+        line = AnchorConfig(
+            target=target,
+            workspace=str(workspace),
+            shadow=None if native else str(tmp_path / "mirror"),
+            native=native,
+        ).command(["/bin/sh", "-c", 'printf "%s\\n" "$HUMANIZE_TARGET"; env'])
+        done = subprocess.run(line, capture_output=True, timeout=120, check=False)
+    finally:
+        stopped(process)
+        broker.close()
+
+    assert done.returncode == 0, done.stderr.decode(errors="replace")[-2000:]
+    told = done.stdout.decode(errors="replace")
+    assert told.splitlines()[0] == f"peer://{host}:{port}"
+    for secret in (anchoring, serving, str(sealed)):
+        assert secret not in told
+
+
+def test_a_meeting_is_told_without_its_ticket_or_its_certificate() -> None:
+    sealed = transport.Target.parse("peer://t1cket@[::1]:7000?tls=/run/certs")
+    assert sealed.told() == "peer://[::1]:7000"
+    assert transport.Target.parse("peer://t1cket@broker:7000").told() == (
+        "peer://broker:7000"
+    )
+    assert transport.Target.parse("ssh://box").told() == "ssh://box"

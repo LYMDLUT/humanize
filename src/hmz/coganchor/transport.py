@@ -643,6 +643,20 @@ class Target:
             return f"peer://{self.meeting}"
         return f"local{':' + self.path if self.path else ''}"
 
+    def told(self) -> str:
+        """Its spelling as an agent is told it: :meth:`describe`, less what admits to a meeting.
+
+        A `peer://` meeting's ticket is the whole of what gets a half into it, and a serving
+        half left standing at a booked one is met there again by whoever brings the ticket
+        next. A command an agent runs is not the anchoring half, and is told where the meeting
+        is and nothing that would make it one: neither the ticket nor the certificate's
+        directory.
+        """
+        if self.scheme == "peer":
+            host = f"[{self.host}]" if ":" in self.host else self.host
+            return f"peer://{host}:{self.port}"
+        return self.describe()
+
     @property
     def meeting(self) -> Meeting:
         """The meeting a `peer://` target names.

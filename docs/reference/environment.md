@@ -167,7 +167,7 @@ watch, and never set.
 | Variable | Set in | Value |
 | --- | --- | --- |
 | `HUMANIZE` | an anchored agent (supervised: its environment; native: an `env` prefix on the target command) | humanize's version |
-| `HUMANIZE_TARGET` | the same | the target, as `--target` spells it |
+| `HUMANIZE_TARGET` | the same | the target, as `--target` spells it, except that a `peer://` target is `peer://HOST:PORT`, without its ticket or `tls=` directory |
 | `HUMANIZE_WORKSPACE` | the same | the workspace as the target names it |
 | `PWD` | an anchored agent; every command run on a target | the working directory |
 | `TERM` | a command run on a target with a terminal | `xterm-256color` unless set |
