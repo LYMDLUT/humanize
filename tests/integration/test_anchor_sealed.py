@@ -475,6 +475,8 @@ def test_the_broker_for_booked_meetings_is_sealed_with_a_key_of_this_machines_al
     broker, port = standing("127.0.0.1")
     at = Path(broker.tls)
     assert at.parent == hmz.machine()
+    # Named for this process, for the next one to remove should this one be killed.
+    assert at.name.startswith(f"rendezvous-{os.getpid()}-")
     assert stat.S_IMODE(at.stat().st_mode) == 0o700
     assert stat.S_IMODE((at / "key.pem").stat().st_mode) == 0o600
     assert (at / CERTIFICATE).read_text().startswith("-----BEGIN CERTIFICATE-----")

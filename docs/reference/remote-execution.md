@@ -810,8 +810,16 @@ pinned to; `DIR/key.pem`, where it is there, is that certificate's key.
   ec_paramgen_curve:prime256v1 -subj "/CN=humanize rendezvous"`, in a directory made `0700`
   under `$TMPDIR/humanize-<uid>` (`/tmp` where `TMPDIR` is unset; the directory humanize keeps
   for what is this machine's alone), the key `0600` from the moment it is written. One pair per
-  broker, which is one per run; the directory is removed as the process exits. Without
-  `openssl` on `PATH`: `FileNotFoundError: no openssl command here: openssl`.
+  broker, which is one per run, in `rendezvous-<pid>-<random>`. The directory is removed as
+  the process exits; one left by a process that was killed is removed by the next process
+  that makes one. Without `openssl` on `PATH`: `FileNotFoundError: no openssl command here:
+  openssl`.
+- That broker listens on the `dial_back` address alone where it is one of this machine's, and
+  on every interface (`0.0.0.0`) where it is not, as for the address of a NAT in front of this
+  machine or a name only the nodes resolve. Either way it is port
+  `$HUMANIZE_RENDEZVOUS_PORT`, default any free port. Fixed, that port is held by whichever of
+  this process's brokers starts first: the one for a third-machine harness, or the one for
+  each `dial_back` address. Leave it unset where a process has more than one.
 
 <small>Defined in [`src/hmz/coganchor/elsewhere.py`](https://github.com/humanfia/humanize/blob/main/src/hmz/coganchor/elsewhere.py) (`afar`, `_carried`), [`src/hmz/coganchor/rendezvous.py`](https://github.com/humanfia/humanize/blob/main/src/hmz/coganchor/rendezvous.py).</small>
 

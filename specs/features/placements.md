@@ -572,3 +572,6 @@ moment it is written.
 
 **10.22** The serving half of a booked meeting MUST be handed the certificate alone, never the
 key.
+
+**10.23** The broker a process holds for booked meetings MUST listen at the dial-back address
+alone where that address is one of this machine's, and on every interface where it is not.

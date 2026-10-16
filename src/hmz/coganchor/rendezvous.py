@@ -1131,7 +1131,8 @@ def _minted() -> str:
     very certificate it is.
 
     Returns:
-      The directory, which is removed when this process exits.
+      The directory, named for this process, which is removed when it exits -- or, when it
+      was killed before it could, by the next process making one.
 
     Raises:
       FileNotFoundError: If there is no `openssl` here.
@@ -1144,7 +1145,9 @@ def _minted() -> str:
 
     from hmz import machine
 
-    made = Path(tempfile.mkdtemp(prefix="rendezvous-", dir=machine()))
+    home = machine()
+    _unminted(home)
+    made = Path(tempfile.mkdtemp(prefix=f"rendezvous-{os.getpid()}-", dir=home))
     atexit.register(shutil.rmtree, made, ignore_errors=True)
     try:
         subprocess.run(
@@ -1170,6 +1173,29 @@ def _minted() -> str:
             f"openssl could not make a certificate: {error.stderr.strip()}"
         ) from error
     return str(made)
+
+
+def _unminted(home: Path) -> None:
+    """Removes the key and certificate of every broker whose process has gone.
+
+    A process removes its own as it exits, which a process killed never gets to: its key
+    would stay, readable by nobody else but no longer anybody's, until something takes it.
+
+    Args:
+      home: Where they are made, this machine's own directory for this user.
+    """
+    import shutil
+
+    for one in home.glob("rendezvous-*-*"):
+        pid = one.name.split("-")[1]
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            shutil.rmtree(one, ignore_errors=True)
+        except OSError:
+            continue  # somebody's, still running
 
 
 # ------------------------------------------------------------------------ punching a hole

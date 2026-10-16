@@ -8,12 +8,17 @@ Two machines that genuinely cannot reach each other are a system test's.
 
 from __future__ import annotations
 
+import os
 import socket
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+import hmz
 from hmz.coganchor.rendezvous import (
     ANCHOR,
     PAIRING,
@@ -261,6 +266,42 @@ def test_the_broker_for_booked_meetings_listens_only_where_it_is_dialled() -> No
     # An address that is not this machine's -- a NAT's -- is listened for everywhere.
     elsewhere, _ = standing("192.0.2.1")
     assert elsewhere.address[0] == "0.0.0.0"  # noqa: S104
+
+
+def test_the_keys_of_brokers_whose_process_is_gone_are_removed_by_the_next() -> None:
+    home = hmz.machine()
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    ended.wait()
+    gone = home / f"rendezvous-{ended.pid}-a1"
+    kept = [
+        home / f"rendezvous-{os.getpid()}-b2",  # a process still running: this one
+        home / "rendezvous-d4",  # named as no process's
+    ]
+    for one in (gone, *kept):
+        one.mkdir()
+        (one / "key.pem").write_text("key")
+
+    # The next process to stand a broker for booked meetings, from its start to its exit.
+    made = subprocess.run(
+        [
+            *(sys.executable, "-P", "-c"),
+            (
+                "from hmz.coganchor.rendezvous import standing\n"
+                "print(standing('127.0.0.1')[0].tls)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=PATIENCE,
+    )
+
+    assert not gone.exists()
+    assert all((one / "key.pem").exists() for one in kept)
+    # And its own, made under the same directory, removed as it exited.
+    own = Path(made.stdout.strip())
+    assert own.parent == home
+    assert not own.exists()
 
 
 def test_a_half_whose_other_half_never_comes_is_told_so() -> None:

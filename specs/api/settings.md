@@ -582,7 +582,9 @@ defaulting to `~/.cache/humanize/shadows` (`api/files/machine.md`).
 hmz from sharing one ssh connection between the ssh commands it runs to one destination.
 
 **11.2.11** `HUMANIZE_RENDEZVOUS` MUST name the host or address of the rendezvous broker, and
-`HUMANIZE_RENDEZVOUS_PORT` the port of the broker a process starts, 0 meaning any free port.
+`HUMANIZE_RENDEZVOUS_PORT` the port of every broker a process starts, the one for the afar
+arrangement and the one for each dial-back address (`features/placements.md` §10.23), 0
+meaning any free port.
 
 **11.2.12** `HUMANIZE_TARGET`, `HUMANIZE_HARNESS`, `HUMANIZE_SHADOW`, `HUMANIZE_TOKEN` and
 `HUMANIZE_LOG` MUST be the defaults of the options of `hmz internal anchor` that
