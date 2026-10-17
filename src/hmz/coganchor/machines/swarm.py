@@ -73,6 +73,10 @@ _NO_NODE = "no suitable node"
 #: How often a task that has not yet landed is asked after.
 _POLL = 0.5
 
+#: How long a manager is given to create a service: it asks a registry which image that is
+#: first, so as long as the task is then given to come up.
+_MAKING = 600.0
+
 
 class Unplaced(RuntimeError):  # noqa: N818 -- named for what happened, as the rest are
     """No node of the swarm took the task: none had room for it, or none answered.
@@ -377,7 +381,8 @@ def _asked(argv: list[str], seconds: float | None) -> subprocess.CompletedProces
     """Runs one question for a manager, with nothing on its stdin, for so long at most.
 
     Raises:
-      OSError: If it could not be run, or did not answer in time.
+      TimeoutError: If it did not answer in time: an `OSError` of `ETIMEDOUT`.
+      OSError: If it could not be run.
     """
     try:
         return subprocess.run(
@@ -389,7 +394,7 @@ def _asked(argv: list[str], seconds: float | None) -> subprocess.CompletedProces
             check=False,
         )
     except subprocess.TimeoutExpired as error:
-        raise OSError(
+        raise TimeoutError(
             errno.ETIMEDOUT, f"{argv[0]} did not answer within {seconds:g}s"
         ) from error
 
@@ -423,6 +428,10 @@ class Swarm(MachineBase):
           FileNotFoundError: If there is no `docker` here, or the manager's host, asked
             whose the workspace is, has no such directory.
           RuntimeError: If the service could not be created.
+          TimeoutError: If the manager did not answer in time: 60 seconds for what it is, and
+            600 for creating the service. A service it creates after all, once it was given
+            up on, has no id here to be removed by: whoever named it can look for it by
+            that name.
           OSError: If the manager could not be asked, or manages no active swarm.
         """
         if self._service:
@@ -440,7 +449,7 @@ class Swarm(MachineBase):
             user = config.user or whose(
                 self._endpoint, config.image, config.workspace, self._info
             )
-            made = subprocess.run(
+            made = _asked(
                 self._endpoint.docker(
                     "service",
                     "create",
@@ -466,9 +475,7 @@ class Swarm(MachineBase):
                     config.image,
                     *_IDLE,
                 ),
-                capture_output=True,
-                text=True,
-                check=False,
+                _MAKING,
             )
             if made.returncode != 0:
                 raise RuntimeError(  # noqa: TRY301 -- the handler takes down what was made
@@ -675,10 +682,10 @@ class Swarm(MachineBase):
         """What the manager says of itself, asked once.
 
         Raises:
-          OSError: If it could not be asked.
+          OSError: If it could not be asked, or did not answer within 60 seconds.
         """
         if self._told is None:
-            self._told = info(str(self._endpoint))
+            self._told = info(str(self._endpoint), 60.0)
         return self._told
 
     def _labelled(self) -> list[str]:

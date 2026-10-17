@@ -448,6 +448,30 @@ def test_a_service_that_could_not_be_created_says_why(
     assert runs.called("service", "rm") == []
 
 
+def test_a_manager_that_does_not_create_the_service_in_time_is_given_up_on(
+    runs: Runs, handshake: Handshake
+) -> None:
+    runs.on("info", out=MANAGER)
+    runs.on("service", "create", timeout=True)
+    machine = SwarmConfig(workspace="/w").create()
+
+    with pytest.raises(TimeoutError, match="did not answer within 600s"):
+        machine.start()
+    assert len(runs.called("service", "create")) == 1
+    assert runs.called("service", "rm") == []  # no id came back to remove it by
+    assert handshake.asked == []
+
+
+def test_a_manager_that_does_not_say_what_it_is_in_time_creates_nothing(
+    runs: Runs,
+) -> None:
+    runs.on("info", timeout=True)
+
+    with pytest.raises(TimeoutError, match="did not answer within 60s"):
+        SwarmConfig(workspace="/w").create().submit()
+    assert runs.called("service") == []
+
+
 def test_a_daemon_in_no_swarm_creates_nothing(runs: Runs) -> None:
     runs.on("info", out=json.dumps({"ServerVersion": "27.0"}))
 

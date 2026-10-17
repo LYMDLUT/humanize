@@ -22,7 +22,8 @@ must not keep every other run here -- or every other environment of its own -- o
 Whether a node has room is the scheduler's to say: a task it leaves pending for want of one is
 given up on, its service removed, and the run told what the scheduler said. A run that died
 without taking its services down leaves them labelled with its host and pid, and the next run
-on that runtime removes any whose process is gone.
+on that runtime removes any whose process is gone. A manager that stops answering is given up
+on as a docker daemon is, and a service it goes on to create after all is removed the same way.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ from .environing_docker import (
     _info,  # pyright: ignore[reportPrivateUsage]
     _mirrors,  # pyright: ignore[reportPrivateUsage]
     _stale,  # pyright: ignore[reportPrivateUsage]
+    _unanswered,  # pyright: ignore[reportPrivateUsage]
 )
 from .environing_ssh import SSHMachine
 from .spi import Placement
@@ -303,7 +305,7 @@ class SwarmMachine(SSHMachine):
                 ).create()
             except ValueError as error:
                 raise EnvUnavailable(f"{where}: {error}") from error
-            with _told(where):
+            with _told(where), _unanswered(endpoint, self.name, service=True):
                 swarm.submit()
         with _told(where):
             swarm.start()
@@ -409,7 +411,8 @@ def _told(where: str) -> Generator[None]:
       ResourceUnmet: If no node of the swarm took the task.
       EnvUnavailable: If there is no `docker` here, the service could not be created, its task
         did not run, or the node it landed on has no workdir.
-      EnvConnectionError: If the manager, or the node the task landed on, could not be asked.
+      EnvConnectionError: If the manager, or the node the task landed on, could not be asked
+        or did not answer in time.
     """
     from hmz.coganchor.machines.swarm import Unplaced
 
@@ -417,6 +420,8 @@ def _told(where: str) -> Generator[None]:
         yield
     except Unplaced as error:
         raise ResourceUnmet(f"{where}: {error}") from error
+    except TimeoutError as error:
+        raise EnvConnectionError(f"could not connect to {where}: {error}") from error
     except FileNotFoundError as error:
         raise EnvUnavailable(
             f"{where}: {error.strerror or error}"

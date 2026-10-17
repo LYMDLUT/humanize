@@ -571,6 +571,123 @@ async def test_a_swarm_task_that_fails_once_created_leaves_nothing(
     assert _mirrored() == []
 
 
+#: How long a daemon is waited for below, in place of the minute -- or the ten minutes, for
+#: making a container or a service -- it is given.
+BOUND = 1.5
+
+#: How long a test of a daemon that stops answering may take at most: the bound, and room
+#: for the stand-in `docker`s started on the way.
+WITHIN = BOUND + 10
+
+
+@pytest.fixture
+def bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Has every question for a daemon, and every container or service made, wait `BOUND`."""
+    from hmz.coganchor.machines import docker as docker_machine
+    from hmz.coganchor.machines import swarm as swarm_machine
+    from hmz.runtime.flowing import environing_docker, environing_swarm
+
+    for module in (docker_machine, environing_docker, environing_swarm):
+        monkeypatch.setattr(module, "_ASKING", BOUND)
+    for module in (docker_machine, swarm_machine):
+        monkeypatch.setattr(module, "_MAKING", BOUND)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.usefixtures("bounded")
+@pytest.mark.parametrize("theirs", [False, True], ids=["ours", "another-process"])
+async def test_a_container_a_stalled_daemon_makes_after_all_is_removed_only_if_it_is_ours(
+    far: Fakes,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    theirs: bool,
+) -> None:
+    far.stall(
+        monkeypatch, "run", labels={PID: str(os.getpid() + 1_000_000)} if theirs else {}
+    )
+    driver = _opened(f"work=docker{work}")
+    began = time.monotonic()
+    try:
+        with pytest.raises(
+            EnvConnectionError,
+            match=r"could not connect to docker: .*did not answer within 1\.5s",
+        ):
+            await probe(driver)
+        took = time.monotonic() - began
+    finally:
+        await driver.close()
+
+    assert took < WITHIN
+    name = _name_of(_run_of(far))
+    calls = far.calls("docker")
+    assert ["inspect", "--type", "container", name] in calls
+    removed = [one for one in calls if one[:1] == ["rm"]]
+    if theirs:
+        assert removed == []
+        assert far.containers() == [name]
+    else:
+        assert removed == [["rm", "--force", f"cid-{name}"]]
+        assert far.containers() == []
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.usefixtures("bounded")
+@pytest.mark.parametrize("theirs", [False, True], ids=["ours", "another-host"])
+async def test_a_service_a_stalled_manager_creates_after_all_is_removed_only_if_it_is_ours(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    work: Path,
+    theirs: bool,
+) -> None:
+    manager = swarm(tmp_path, monkeypatch)
+    manager.stall(
+        monkeypatch, "service create", labels={HOST: "elsewhere"} if theirs else {}
+    )
+    driver = _opened(f"work=swarm{work}")
+    began = time.monotonic()
+    try:
+        with pytest.raises(
+            EnvConnectionError,
+            match=r"could not connect to swarm: .*did not answer within 1\.5s",
+        ):
+            await probe(driver)
+        took = time.monotonic() - began
+    finally:
+        await driver.close()
+
+    assert took < WITHIN
+    calls = manager.calls("docker")
+    (created,) = [one for one in calls if one[:2] == ["service", "create"]]
+    name = _name_of(created)
+    assert ["service", "inspect", name] in calls
+    if theirs:
+        assert not [one for one in calls if one[:2] == ["service", "rm"]]
+        assert manager.services() == [name]
+    else:
+        assert ["service", "rm", name] in calls
+        assert manager.services() == []
+    assert _mirrored() == []
+
+
+@linux
+@pytest.mark.timeout(60)
+@pytest.mark.usefixtures("bounded")
+async def test_a_daemon_that_does_not_take_a_container_down_does_not_hold_up_closing(
+    far: Fakes, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _opened(f"work=docker{work}")
+    try:
+        await probe(driver)
+    finally:
+        far.stall(monkeypatch, "rm")
+        began = time.monotonic()
+        await driver.close()
+        took = time.monotonic() - began
+
+    assert took < WITHIN
+    assert [one for one in far.calls("docker") if one[:2] == ["rm", "--force"]]
+
+
 def _apple(far: Fakes) -> None:
     far.answer("system", json.dumps({"status": "running"}))
     far.answer("list", "[]")

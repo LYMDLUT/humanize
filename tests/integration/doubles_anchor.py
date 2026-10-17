@@ -55,6 +55,15 @@ def rooted(words):
     if not root:
         return list(words)
     return [w.replace("/tmp/humanize", root + "/tmp/humanize") for w in words]
+
+def stall_if(key):
+    if key in os.environ.get("FAKE_STALLED", "").split(","):
+        import time
+        # Unanswered for as long as whoever asked waits, and never past it.
+        parent, until = os.getppid(), time.monotonic() + 120
+        while os.getppid() == parent and time.monotonic() < until:
+            time.sleep(0.2)
+        sys.exit(255)
 """.replace("NOTED_HERE", repr(NOTED))
 
 #: ssh's options that take a value; every other `-x` is a switch.
@@ -78,7 +87,8 @@ os.execve("/bin/sh", ["/bin/sh", "-c", " ".join(rest)], env)
 #: under its name, which is its id too: `docker service create`, `ls` (by `label=` filters),
 #: `inspect`, `ps` and `rm`, and `docker inspect --type task`. A service's task is preparing
 #: for `$FAKE_SWARM_STARTING` seconds after it was created, then running in a container whose
-#: `exec` runs here -- or failed, where the service's name holds `$FAKE_SWARM_FAILING`.
+#: `exec` runs here -- or failed, where the service's name holds `$FAKE_SWARM_FAILING`. A
+#: stalled `service create` (`Fakes.stall`) creates the service, and then never answers.
 _SWARM = """
 import time
 
@@ -122,11 +132,13 @@ def swarmed(state, sub, args):
                 break
     if verb == "create":
         labels = dict(value.partition("=")[::2] for flag, value in flags if flag == "--label")
+        labels.update(json.loads(os.environ.get("FAKE_STALLED_LABELS") or "{}"))
         name = dict(flags)["--name"]
-        spec = {"made": time.time(), "Spec": {"Name": name, "Labels": labels}}
+        spec = {"made": time.time(), "ID": name, "Spec": {"Name": name, "Labels": labels}}
         with open(os.path.join(state, "." + name), "w", encoding="utf-8") as one:
             json.dump(spec, one)
         os.replace(os.path.join(state, "." + name), os.path.join(state, name + ".json"))
+        stall_if("service create")
         print(name)
     elif verb == "ls":
         wanted = [value.removeprefix("label=") for flag, value in flags if flag == "--filter"]
@@ -151,11 +163,14 @@ def swarmed(state, sub, args):
     return 0
 """
 
-#: `docker` and `container`. A subcommand a test gave an answer for (`Fakes.answer`) says
-#: that; otherwise, on a swarm (`swarm`), its services and tasks are what it keeps, `exec`
-#: and a one-shot `run` run their command here, a detached `run` makes a container id and
-#: writes it where `--cidfile` says, `logs` says `$FAKE_LOGS`, and anything else succeeds
-#: saying nothing.
+#: `docker` and `container`. A subcommand a test stalled (`Fakes.stall`) never answers; one
+#: it gave an answer for (`Fakes.answer`) says that; otherwise, on a swarm (`swarm`), its
+#: services and tasks are what it keeps, `exec` and a one-shot `run` run their command here,
+#: a detached `run` makes a container id and writes it where `--cidfile` says, `logs` says
+#: `$FAKE_LOGS`, and anything else succeeds saying nothing. Where `$FAKE_CONTAINERS` names a
+#: directory, a detached `run` also keeps its container there -- before it stalls, where it
+#: is stalled, without writing the cidfile -- and `inspect --type container` and `rm` answer
+#: from it.
 _EXEC = """
 tool = os.path.basename(sys.argv[0])
 note(tool)
@@ -168,6 +183,26 @@ while args and args[0].startswith("-"):
 if not args:
     sys.exit(0)
 sub, args = args[0], args[1:]
+if sub not in ("run", "service"):
+    stall_if(sub)
+kept_in = os.environ.get("FAKE_CONTAINERS", "")
+if kept_in and sub == "inspect" and args[:2] == ["--type", "container"]:
+    found = []
+    for name in args[2:]:
+        try:
+            with open(os.path.join(kept_in, name + ".json"), encoding="utf-8") as one:
+                found.append(json.load(one))
+        except OSError:
+            sys.stderr.write("Error: No such container: " + name + "\\n")
+    print(json.dumps(found))
+    sys.exit(0 if found else 1)
+if kept_in and sub == "rm":
+    for name in os.listdir(kept_in):
+        with open(os.path.join(kept_in, name), encoding="utf-8") as one:
+            made = json.load(one)
+        if made["Id"] in args or made["Name"][1:] in args:
+            os.remove(os.path.join(kept_in, name))
+    sys.exit(0)
 answers = {}
 if os.path.exists(os.environ["FAKE_ANSWERS"]):
     with open(os.environ["FAKE_ANSWERS"], encoding="utf-8") as held:
@@ -206,11 +241,24 @@ elif sub == "run":
         flags[flag] = args.pop(0) if flag in valued else ""
     if "--detach" in flags or "-d" in flags:
         made = "cid-" + flags.get("--name", "anonymous")
+        if kept_in:
+            labels = {}
+            for flag, value in zip(sys.argv[1:], sys.argv[2:]):
+                if flag in ("--label", "-l"):
+                    labels.update([value.partition("=")[::2]])
+            labels.update(json.loads(os.environ.get("FAKE_STALLED_LABELS") or "{}"))
+            kept = {"Id": made, "Name": "/" + flags.get("--name", "anonymous"),
+                    "Config": {"Labels": labels}, "State": {"Status": "created"}}
+            with open(os.path.join(kept_in, flags.get("--name", made) + ".json"), "w",
+                      encoding="utf-8") as one:
+                json.dump(kept, one)
+        stall_if("run")
         if "--cidfile" in flags:
             with open(flags["--cidfile"], "w", encoding="utf-8") as cid:
                 cid.write(made)
         print(made)
         sys.exit(0)
+    stall_if("run")
     argv = rooted(args[1:])
     if not argv:
         sys.exit(0)
@@ -231,6 +279,7 @@ class Fakes:
       home: The `HOME` a command sent over `ssh` runs with.
       root: Where a container's `/tmp/humanize...` really is.
       answers: What `docker` and `container` answer each subcommand with, as JSON.
+      kept: Where a detached `run` keeps its container, once a test stalls the daemon.
       swarm: Where a swarm (`swarm`) keeps its services, or None for no swarm.
     """
 
@@ -239,6 +288,7 @@ class Fakes:
     home: Path
     root: Path
     answers: Path
+    kept: Path
     swarm: Path | None = None
 
     def answer(
@@ -270,6 +320,26 @@ class Fakes:
         assert self.swarm is not None
         return sorted(one.stem for one in self.swarm.glob("*.json"))
 
+    def stall(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *subcommands: str,
+        labels: dict[str, str] | None = None,
+    ) -> None:
+        """Has `docker` never answer `subcommands`, as a daemon that has stopped answering.
+
+        A stalled detached `run` makes its container first, kept where :meth:`containers`
+        reads it and with no cidfile written, and a stalled `service create` its service, as
+        a slow daemon goes on to: each labelled with `labels` over what it was told.
+        """
+        monkeypatch.setenv("FAKE_STALLED", ",".join(subcommands))
+        monkeypatch.setenv("FAKE_STALLED_LABELS", json.dumps(labels or {}))
+        monkeypatch.setenv("FAKE_CONTAINERS", str(self.kept))
+
+    def containers(self) -> list[str]:
+        """The containers a detached `run` made, by name, while the daemon was stalled."""
+        return sorted(one.stem for one in self.kept.glob("*.json"))
+
 
 def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
     """Writes `ssh`, `docker` and `container` into a directory on the front of `PATH`."""
@@ -279,8 +349,9 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
         home=tmp_path / "far-home",
         root=tmp_path / "far-root",
         answers=tmp_path / "fake-answers.json",
+        kept=tmp_path / "fake-containers",
     )
-    for one in (made.bin, made.home, made.root / "tmp"):
+    for one in (made.bin, made.home, made.root / "tmp", made.kept):
         one.mkdir(parents=True)
     for name, body in (
         ("ssh", _SSH),

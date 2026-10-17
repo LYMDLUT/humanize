@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
+import json
+import os
 import re
 import shutil
+import socket
+import subprocess
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -29,7 +34,7 @@ from hmz.flows import (
 )
 from hmz.runtime.flowing.declaring import EnvRole, env_roles
 from hmz.runtime.flowing.environing import MachineEnvDriver, Resources
-from hmz.runtime.flowing.environing_docker import IMAGE, PROVIDER, ROLE
+from hmz.runtime.flowing.environing_docker import HOST, IMAGE, PID, PROVIDER, ROLE
 from hmz.runtime.flowing.environing_swarm import LOCAL, Share, SwarmMachine, shared
 from tests.unit.runtime.flowing.doubles_u11 import (
     Held,
@@ -325,6 +330,46 @@ async def test_a_service_that_would_not_be_created_is_never_waited_for(
 
     with pytest.raises(EnvUnavailable, match="swarm: could not create a service"):
         await SwarmMachine(LOCAL, PurePosixPath("/x")).probe()
+    assert manager.done == [("submit", False)]
+
+
+@pytest.mark.parametrize(
+    ("host", "removed"),
+    [("", True), ("elsewhere", False)],
+    ids=["ours", "another-host"],
+)
+async def test_a_manager_that_does_not_create_in_time_is_given_up_on_and_its_make_undone(
+    manager: type[_Config],
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    removed: bool,
+) -> None:
+    manager.refuses = TimeoutError(errno.ETIMEDOUT, "docker did not answer within 600s")
+    machine = SwarmMachine(LOCAL, PurePosixPath("/x"))
+    labels = {
+        "humanize": str(os.getuid()),
+        HOST: host or socket.gethostname(),
+        PID: str(os.getpid()),
+    }
+    found = [{"ID": "svc-1", "Spec": {"Name": machine.name, "Labels": labels}}]
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        calls.append([str(one) for one in argv])
+        out = json.dumps(found) if "inspect" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(
+        EnvConnectionError, match=r"could not connect to swarm: .*within 600s"
+    ):
+        await machine.probe()
+
+    assert calls[0][-3:] == ["service", "inspect", machine.name]
+    assert [one[-3:] for one in calls[1:]] == (
+        [["service", "rm", "svc-1"]] if removed else []
+    )
     assert manager.done == [("submit", False)]
 
 
