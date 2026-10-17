@@ -382,6 +382,36 @@ async def test_a_manager_that_does_not_create_in_time_is_given_up_on_and_its_mak
     assert manager.done == [("submit", False)]
 
 
+async def test_a_service_dialling_back_created_after_all_goes_with_what_it_was_made_with(
+    manager: type[_Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager.refuses = TimeoutError(errno.ETIMEDOUT, "docker did not answer within 600s")
+    machine = SwarmMachine(LOCAL, PurePosixPath("/x"))
+    labels = {
+        "humanize": str(os.getuid()),
+        HOST: socket.gethostname(),
+        PID: str(os.getpid()),
+        coganchor_swarm.DIALLING: "1",
+    }
+    found = [{"ID": "svc-1", "Spec": {"Name": machine.name, "Labels": labels}}]
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        calls.append([str(one) for one in argv])
+        out = json.dumps(found) if "inspect" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(EnvConnectionError, match="could not connect to swarm"):
+        await machine.probe()
+
+    assert [one[-3:] for one in calls[1:]] == [
+        ["service", "rm", "svc-1"],
+        *([kind, "rm", name] for kind, name in coganchor_swarm.kept(machine.name)),
+    ]
+
+
 async def test_a_task_on_a_runtime_dialling_back_is_reached_at_its_meeting(
     manager: type[_Config],
 ) -> None:
