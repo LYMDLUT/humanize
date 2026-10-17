@@ -468,6 +468,36 @@ def test_a_task_that_is_not_what_was_promised_is_taken_down(
     assert runs.called("service", "rm", "svc")
 
 
+def test_a_service_submitted_alone_is_not_waited_for_and_is_created_once(
+    runs: Runs, handshake: Handshake
+) -> None:
+    a_swarm(runs, task("running"))
+    machine = SwarmConfig(workspace="/w").create()
+
+    assert machine.submit() == "svc"
+    assert machine.submit() == "svc"
+    assert runs.called("service", "ps") == []
+    machine.start()
+
+    assert len(runs.called("service", "create")) == 1
+    assert handshake.asked
+
+
+def test_a_task_stopped_and_started_again_is_a_service_of_its_own(
+    runs: Runs, handshake: Handshake
+) -> None:
+    a_swarm(runs, task("running"))
+    machine = SwarmConfig(workspace="/w").create()
+    first = machine.start()
+    machine.stop()
+
+    second = machine.start()
+
+    assert len(runs.called("service", "create")) == 2
+    assert first.shadow != second.shadow
+    machine.stop()
+
+
 def test_stopping_removes_the_service_once(runs: Runs, handshake: Handshake) -> None:
     a_swarm(runs, task("running"))
     machine = SwarmConfig(workspace="/w").create()

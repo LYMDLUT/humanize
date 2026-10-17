@@ -560,8 +560,9 @@ harness, files, derived environments -- is as for a [docker environment](#docker
 | Labels | on the service: those of a docker environment's container |
 | Reached | `docker exec` against: the daemon the runtime's `nodes` names for the node's host, else the manager's own where the task landed on the manager, else `ssh://<the node's address>` (docker's ssh transport, as this machine's `ssh` resolves it) |
 
-Allocation, done while holding an exclusive `flock` on
-`$TMPDIR/humanize-<uid>/.swarm.<name>.lock` until the task runs:
+Allocation holds an exclusive `flock` on `$TMPDIR/humanize-<uid>/.swarm.<name>.lock` while
+what is free is worked out and the service is created, and not while its task is placed and
+comes up: the service counts against the runtime from the moment it is created.
 
 1. `docker info` of the manager: `Swarm.LocalNodeState` must be `active` and
    `Swarm.ControlAvailable` true, else `EnvUnavailable`.
@@ -579,9 +580,11 @@ swarm@cluster has 8 GiB of 64 GiB of memory free, and 'box' asks for 16 GiB (…
 swarm@cluster hands out no GPUs, and 'box' asks for 1: say which generic resource its nodes advertise them as in the runtime's gpu_resource
 ```
 
-4. `docker service create`, then the task is followed (`docker service ps`, `docker inspect
-   --type task`) until it runs. Left pending with `no suitable node`, it raises `ResourceUnmet`
-   at once where no ready, active node has as many CPUs, as much memory and as many of the
+4. `docker service create`, then the lock is let go of and the task followed (`docker service
+   ps`, `docker inspect --type task`) until it runs, so the environments of one run, and other
+   runs, on the runtime come up side by side; a run sizing the runtime meanwhile counts the
+   service all the same. Left pending with `no suitable node`, it raises `ResourceUnmet` at
+   once where no ready, active node has as many CPUs, as much memory and as many of the
    generic resource as it reserves, and after 30 s otherwise; either way the service is
    removed first:
 
@@ -1206,9 +1209,11 @@ service labelled `humanize`; `nodes(endpoint="local", seconds=None)` returns eac
 it advertises by kind; and `swarm_of(info, where)` the manager's node id, or `OSError` where the
 daemon manages no active swarm. `SwarmConfig(image, workspace, endpoint, name, user, cpus,
 memory, generic, constraints, nodes, traced, run_args, env, labels, placing=30.0,
-starting=600.0).create()` is the `Swarm` machine a swarm environment starts: its `start()`
-raises `Unplaced` (a `RuntimeError`) for a task no node took, and sets `placed` to the
-`Placed(node, container, daemon)` it landed on.
+starting=600.0).create()` is the `Swarm` machine a swarm environment starts: its `submit()`
+creates the service without waiting for its task, once however often it is called, and
+returns its id; its `start()` submits where `submit()` has not, raises `Unplaced` (a
+`RuntimeError`) for a task no node took, and sets `placed` to the `Placed(node, container,
+daemon)` it landed on.
 
 `hmz.coganchor.machines.apple_container` has the same for this Mac's Apple containers:
 `allocations(labels=None, *, seconds=None)` reads an `Allocation` (with no GPUs) off every

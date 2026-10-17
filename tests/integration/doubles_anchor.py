@@ -16,7 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from hmz.coganchor.proto import Channel
@@ -74,10 +74,88 @@ env = dict(os.environ, HOME=os.environ["FAKE_HOME"])
 os.execve("/bin/sh", ["/bin/sh", "-c", " ".join(rest)], env)
 """
 
+#: A swarm of one node, `n1`, that keeps its services as files in `$FAKE_SWARM`, one each,
+#: under its name, which is its id too: `docker service create`, `ls` (by `label=` filters),
+#: `inspect`, `ps` and `rm`, and `docker inspect --type task`. A service's task is preparing
+#: for `$FAKE_SWARM_STARTING` seconds after it was created, then running in a container whose
+#: `exec` runs here -- or failed, where the service's name holds `$FAKE_SWARM_FAILING`.
+_SWARM = """
+import time
+
+def kept(state, service):
+    try:
+        with open(os.path.join(state, service + ".json"), encoding="utf-8") as one:
+            return json.load(one)
+    except (OSError, ValueError):
+        return None
+
+def swarmed(state, sub, args):
+    if sub == "inspect":
+        service = args[-1].removeprefix("task-")
+        made = kept(state, service)
+        if made is None:
+            sys.stderr.write("Error: No such object: " + args[-1] + "\\n")
+            print("[]")
+            return 1
+        failing = os.environ.get("FAKE_SWARM_FAILING", "")
+        if time.time() - made["made"] < float(os.environ.get("FAKE_SWARM_STARTING") or 0):
+            status = {"State": "preparing"}
+        elif failing and failing in service:
+            status = {"State": "failed", "Err": "task: non-zero exit (1)"}
+        else:
+            status = {"State": "running", "ContainerStatus": {"ContainerID": "c-" + service}}
+        print(json.dumps([{"NodeID": "n1", "Status": status}]))
+        return 0
+    verb, args = args[0], args[1:]
+    valued = {"--name", "--label", "--user", "--workdir", "--env", "--mount", "--replicas",
+              "--restart-condition", "--reserve-cpu", "--limit-cpu", "--reserve-memory",
+              "--limit-memory", "--generic-resource", "--constraint", "--cap-add",
+              "--filter"}
+    flags, named = [], []
+    while args:
+        word = args.pop(0)
+        if word.startswith("-"):
+            flags.append((word, args.pop(0) if word in valued else ""))
+        else:
+            named.append(word)
+            if verb == "create":
+                break
+    if verb == "create":
+        labels = dict(value.partition("=")[::2] for flag, value in flags if flag == "--label")
+        name = dict(flags)["--name"]
+        spec = {"made": time.time(), "Spec": {"Name": name, "Labels": labels}}
+        with open(os.path.join(state, "." + name), "w", encoding="utf-8") as one:
+            json.dump(spec, one)
+        os.replace(os.path.join(state, "." + name), os.path.join(state, name + ".json"))
+        print(name)
+    elif verb == "ls":
+        wanted = [value.removeprefix("label=") for flag, value in flags if flag == "--filter"]
+        for file in sorted(os.listdir(state)):
+            made = kept(state, file[:-5]) if file.endswith(".json") else None
+            labels = made["Spec"]["Labels"] if made else None
+            if labels is not None and all(
+                key in labels and (not eq or labels[key] == value)
+                for key, eq, value in (one.partition("=") for one in wanted)
+            ):
+                print(file[:-5])
+    elif verb == "inspect":
+        print(json.dumps([made for made in map(lambda one: kept(state, one), named) if made]))
+    elif verb == "ps":
+        print("task-" + named[-1])
+    elif verb == "rm":
+        for service in named:
+            try:
+                os.remove(os.path.join(state, service + ".json"))
+            except OSError:
+                pass
+    return 0
+"""
+
 #: `docker` and `container`. A subcommand a test gave an answer for (`Fakes.answer`) says
-#: that; otherwise `exec` and a one-shot `run` run their command here, a detached `run`
-#: makes a container id and writes it where `--cidfile` says, `logs` says `$FAKE_LOGS`, and
-#: anything else succeeds saying nothing.
+#: that; otherwise, on a swarm (`swarm`), its services and tasks are what it keeps, `exec`
+#: and a one-shot `run` run their command here, a detached `run` makes a container id and
+#: writes it where `--cidfile` says, `logs` says `$FAKE_LOGS`, and anything else succeeds
+#: saying nothing.
 _EXEC = """
 tool = os.path.basename(sys.argv[0])
 note(tool)
@@ -100,6 +178,9 @@ for key in ((sub + " " + args[0]) if args else None, sub):
         sys.stdout.write(said.get("stdout", ""))
         sys.stderr.write(said.get("stderr", ""))
         sys.exit(said.get("status", 0))
+tasked = sub == "inspect" and args[:2] == ["--type", "task"]
+if os.environ.get("FAKE_SWARM") and (sub == "service" or tasked):
+    sys.exit(swarmed(os.environ["FAKE_SWARM"], sub, args))
 if sub == "logs":
     sys.stdout.write(os.environ.get("FAKE_LOGS", ""))
     sys.exit(0)
@@ -150,6 +231,7 @@ class Fakes:
       home: The `HOME` a command sent over `ssh` runs with.
       root: Where a container's `/tmp/humanize...` really is.
       answers: What `docker` and `container` answer each subcommand with, as JSON.
+      swarm: Where a swarm (`swarm`) keeps its services, or None for no swarm.
     """
 
     bin: Path
@@ -157,6 +239,7 @@ class Fakes:
     home: Path
     root: Path
     answers: Path
+    swarm: Path | None = None
 
     def answer(
         self, subcommand: str, stdout: str = "", *, stderr: str = "", status: int = 0
@@ -182,6 +265,11 @@ class Fakes:
         """Has `tool` refuse what it is asked to run over there, saying `said`."""
         monkeypatch.setenv(f"FAKE_FAIL_{tool.upper().replace('-', '_')}", said)
 
+    def services(self) -> list[str]:
+        """The services the swarm has now, by name."""
+        assert self.swarm is not None
+        return sorted(one.stem for one in self.swarm.glob("*.json"))
+
 
 def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
     """Writes `ssh`, `docker` and `container` into a directory on the front of `PATH`."""
@@ -194,7 +282,11 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
     )
     for one in (made.bin, made.home, made.root / "tmp"):
         one.mkdir(parents=True)
-    for name, body in (("ssh", _SSH), ("docker", _EXEC), ("container", _EXEC)):
+    for name, body in (
+        ("ssh", _SSH),
+        ("docker", _SWARM + _EXEC),
+        ("container", _SWARM + _EXEC),
+    ):
         path = made.bin / name
         path.write_text(f"#!{sys.executable}\n{_COMMON}{body}")
         path.chmod(0o755)
@@ -203,6 +295,45 @@ def fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fakes:
     monkeypatch.setenv("FAKE_HOME", str(made.home))
     monkeypatch.setenv("FAKE_ROOT", str(made.root))
     monkeypatch.setenv("FAKE_ANSWERS", str(made.answers))
+    return made
+
+
+def swarm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    starting: float = 0.0,
+    failing: str = "",
+) -> Fakes:
+    """The swarm this machine manages, of one node, `n1`, which is this machine.
+
+    Args:
+      tmp_path: Where the fakes and the services are kept.
+      monkeypatch: What puts them on `PATH`.
+      starting: How long, in seconds, each task prepares before it runs.
+      failing: What the name of a service whose task fails holds; nothing fails where empty.
+    """
+    made = replace(fakes(tmp_path, monkeypatch), swarm=tmp_path / "fake-swarm")
+    assert made.swarm is not None
+    made.swarm.mkdir()
+    monkeypatch.setenv("FAKE_SWARM", str(made.swarm))
+    monkeypatch.setenv("FAKE_SWARM_STARTING", str(starting))
+    monkeypatch.setenv("FAKE_SWARM_FAILING", failing)
+    manager = {"LocalNodeState": "active", "ControlAvailable": True, "NodeID": "n1"}
+    made.answer("info", json.dumps({"ServerVersion": "27.0", "Swarm": manager}))
+    made.answer(
+        "node inspect",
+        json.dumps(
+            [
+                {
+                    "ID": "n1",
+                    "Spec": {"Availability": "active"},
+                    "Description": {"Hostname": "alpha", "Resources": {}},
+                    "Status": {"State": "ready", "Addr": "10.0.0.7"},
+                }
+            ]
+        ),
+    )
     return made
 
 

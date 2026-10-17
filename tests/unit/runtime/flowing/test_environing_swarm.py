@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import re
 import shutil
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from hmz import machine as machine_dir
 from hmz.coganchor import machines
 from hmz.coganchor.machines import AnchoredConfig, store
 from hmz.coganchor.machines import swarm as coganchor_swarm
@@ -177,19 +179,41 @@ class _Placed:
     daemon: str
 
 
+def _free(provider: str) -> bool:
+    """Whether the runtime is free for another run to ask it now: its lock is not held."""
+    with (machine_dir() / f".swarm.{provider}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        return True
+
+
 class _Config:
     made: list[dict[str, Any]]
     stopped: int
     fails: BaseException | None = None
+    refuses: BaseException | None = None
+    #: What was done, and whether the runtime was free for another run as it was.
+    done: list[tuple[str, bool]]
 
     def __init__(self, **said: Any) -> None:
         type(self).made.append(said)
         self.placed: _Placed | None = None
+        self.provider = said["labels"][PROVIDER]
 
     def create(self) -> _Config:
         return self
 
+    def submit(self) -> str:
+        type(self).done.append(("submit", _free(self.provider)))
+        if self.refuses is not None:
+            raise self.refuses
+        return "svc"
+
     def start(self) -> None:
+        type(self).done.append(("start", _free(self.provider)))
         if self.fails is not None:
             raise self.fails
         self.placed = _Placed("task.1.abc", "ssh://node-2")
@@ -205,6 +229,7 @@ def manager(monkeypatch: pytest.MonkeyPatch) -> type[_Config]:
     class Config(_Config):
         made: list[dict[str, Any]] = []  # noqa: RUF012 -- one list per test
         stopped = 0
+        done: list[tuple[str, bool]] = []  # noqa: RUF012 -- one list per test
 
     def which(name: str, *_: Any, **__: Any) -> str | None:
         return f"/usr/bin/{name}" if name == "docker" else None
@@ -280,6 +305,27 @@ async def test_a_service_is_created_under_the_name_its_runtime_prefixes(
     assert made["name"] == machine.name
     assert re.fullmatch(r"team-a-w-[0-9a-f]{8}", made["name"])
     await machine.close()
+
+
+async def test_a_task_is_waited_for_with_its_runtime_let_go_of(
+    manager: type[_Config],
+) -> None:
+    machine = SwarmMachine(LOCAL, PurePosixPath("/x"))
+
+    await machine.probe()
+
+    assert manager.done == [("submit", False), ("start", True)]
+    await machine.close()
+
+
+async def test_a_service_that_would_not_be_created_is_never_waited_for(
+    manager: type[_Config],
+) -> None:
+    manager.refuses = RuntimeError("could not create a service of img")
+
+    with pytest.raises(EnvUnavailable, match="swarm: could not create a service"):
+        await SwarmMachine(LOCAL, PurePosixPath("/x")).probe()
+    assert manager.done == [("submit", False)]
 
 
 async def test_a_task_no_node_took_is_a_resource_unmet(manager: type[_Config]) -> None:

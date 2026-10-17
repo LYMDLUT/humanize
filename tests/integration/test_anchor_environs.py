@@ -15,6 +15,7 @@ import os
 import re
 import socket
 import sys
+import time
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -34,7 +35,7 @@ from hmz.runtime.flowing.environing import MachineEnvDriver
 from hmz.runtime.flowing.environing_docker import HOST, PID, PROVIDER
 from hmz.runtime.flowing.environments import local_env, open_env, probe
 from hmz.runtime.flowing.specs import parse_envs
-from tests.integration.doubles_anchor import Fakes, fakes, slurm
+from tests.integration.doubles_anchor import Fakes, fakes, slurm, swarm
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -477,6 +478,97 @@ async def test_a_swarm_runtime_naming_a_prefix_creates_its_services_under_it(
         one for one in far.calls("docker") if one[:2] == ["service", "create"]
     ]
     assert re.fullmatch(r"team-a-work-[0-9a-f]{8}", _name_of(created))
+
+
+#: How long each task of a swarm below takes to come up once its service is created.
+STARTING = 4.0
+
+
+def _created(manager: Fakes) -> list[float]:
+    """When each service the swarm has now was created, in order."""
+    assert manager.swarm is not None
+    return sorted(
+        json.loads((manager.swarm / f"{one}.json").read_text())["made"]
+        for one in manager.services()
+    )
+
+
+def _mirrored() -> list[Path]:
+    """The private directories a swarm machine holds its mirror in, left in `$TMPDIR`."""
+    return [
+        one
+        for one in Path(os.environ["TMPDIR"]).glob("humanize-*")
+        if one.name != f"humanize-{os.getuid()}"
+    ]
+
+
+async def _closed(*drivers: EnvDriver) -> None:
+    for one in drivers:
+        await one.close()
+
+
+@linux
+async def test_two_swarm_environments_of_one_run_come_up_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path
+) -> None:
+    manager = swarm(tmp_path, monkeypatch, starting=STARTING)
+    first, second = (_opened(f"{role}=swarm{work}") for role in ("one", "two"))
+    began = time.monotonic()
+    try:
+        await asyncio.gather(probe(first), probe(second))
+        took = time.monotonic() - began
+        made = _created(manager)
+    finally:
+        await _closed(first, second)
+
+    assert len(made) == 2
+    assert made[1] - made[0] < STARTING  # the second, before the first one's task ran
+    assert took < 2 * STARTING
+    assert manager.services() == []
+
+
+@linux
+async def test_swarm_environments_past_their_runtimes_task_limit_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path
+) -> None:
+    manager = swarm(tmp_path, monkeypatch, starting=1.0)
+    store.write(store.new(store.SWARM, "team", max_tasks=1))
+    first, second = (_opened(f"{role}=swarm@team{work}") for role in ("one", "two"))
+    try:
+        said = await asyncio.gather(probe(first), probe(second), return_exceptions=True)
+    finally:
+        await _closed(first, second)
+
+    refused = [one for one in said if one is not None]
+    assert len(refused) == 1
+    assert isinstance(refused[0], ResourceUnmet)
+    assert "runs 1 of the 1 tasks it may" in str(refused[0])
+    created = [
+        one for one in manager.calls("docker") if one[:2] == ["service", "create"]
+    ]
+    assert len(created) == 1
+
+
+@linux
+async def test_a_swarm_task_that_fails_once_created_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path
+) -> None:
+    manager = swarm(tmp_path, monkeypatch, starting=1.0, failing="-bad-")
+    bad, good = _opened(f"bad=swarm{work}"), _opened(f"good=swarm{work}")
+    try:
+        said = await asyncio.gather(probe(bad), probe(good), return_exceptions=True)
+        left = manager.services()
+    finally:
+        await _closed(bad, good)
+
+    assert isinstance(said[0], EnvUnavailable)
+    assert "is failed: task: non-zero exit (1)" in str(said[0])
+    assert said[1] is None
+    assert [re.sub(r"[0-9a-f]{8}$", "", one) for one in left] == [
+        "humanize-local-good-"
+    ]
+    assert manager.services() == []
+    assert _mirrored() == []
 
 
 def _apple(far: Fakes) -> None:
