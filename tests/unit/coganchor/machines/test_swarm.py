@@ -672,6 +672,26 @@ def test_a_task_that_dials_back_is_met_only_once_it_is_started(
     machine.stop()
 
 
+@pytest.mark.parametrize("nodes_said", [{}, {"box": "tcp://box:2376"}])
+def test_a_task_that_dials_back_is_reached_through_no_nodes_daemon(
+    runs: Runs, handshake: Handshake, broker: Booking, nodes_said: dict[str, str]
+) -> None:
+    # A node with no address to reach it at, and one the runtime names a daemon for.
+    a_swarm(runs, task("running", on="n1"), landed_on=node("n1", "box", ""))
+    machine = SwarmConfig(
+        workspace="/w", name="svc", dial_back="h", nodes=nodes_said
+    ).create()
+
+    anchor = machine.start()
+
+    assert anchor.target == f"peer://{ANCHORING}@h:4242?tls={SEALED}"
+    assert machine.placed is not None
+    assert machine.placed.node.hostname == "box"
+    assert machine.placed.daemon == Endpoint()
+    assert not [one for one in runs.calls if "tcp://box:2376" in one]
+    machine.stop()
+
+
 def test_a_dialling_tasks_serving_half_is_handed_over_deflated_and_made_once(
     runs: Runs, handshake: Handshake, broker: Booking, tmp_path: Path
 ) -> None:

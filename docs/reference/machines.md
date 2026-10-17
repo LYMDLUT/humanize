@@ -1233,12 +1233,13 @@ service labelled `humanize`; `nodes(endpoint="local", seconds=None)` returns eac
 it advertises by kind; and `swarm_of(info, where)` the manager's node id, or `OSError` where the
 daemon manages no active swarm. `SwarmConfig(image, workspace, endpoint, name, user, cpus,
 memory, generic, constraints, nodes, traced, run_args, env, labels, placing=30.0,
-starting=600.0, dial_back="").create()` is the `Swarm` machine a swarm environment starts: its `submit()`
-creates the service without waiting for its task, once however often it is called, and returns
-its id, raising `TimeoutError` where the manager does not say what it is within 60 s or create
-the service within 600 s; its `start()` submits where `submit()` has not, raises `Unplaced` (a
-`RuntimeError`) for a task no node took, and sets `placed` to the `Placed(node, container,
-daemon)` it landed on.
+starting=600.0, dial_back="").create()` is the `Swarm` machine a swarm environment starts: its
+`submit()` creates the service without waiting for its task, once however often it is called,
+and returns its id, raising `TimeoutError` where the manager does not say what it is within
+60 s or create the service within 600 s; its `start()` submits where `submit()` has not, raises
+`Unplaced` (a `RuntimeError`) for a task no node took, and sets `placed` to the `Placed(node,
+container, daemon)` it landed on, `daemon` the manager's for a task that dials back, which no
+node's daemon is looked for.
 
 `hmz.coganchor.machines.apple_container` has the same for this Mac's Apple containers:
 `allocations(labels=None, *, seconds=None)` reads an `Allocation` (with no GPUs) off every

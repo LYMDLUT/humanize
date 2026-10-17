@@ -867,7 +867,9 @@ class Swarm(MachineBase):
 
         The one the setting names for its host where it names one; else the manager's own,
         reached as the manager is, where the task landed on the manager; else the node's over
-        `ssh://<its address>`.
+        `ssh://<its address>`. A task that dials back is reached at its meeting and through
+        no daemon, so none is looked for, the setting's `nodes` included, and the manager's
+        is said.
         """
         config = self._config
         found = [
@@ -882,7 +884,9 @@ class Swarm(MachineBase):
         )
         if not container:
             raise RuntimeError(f"the task of {self._service} names no container")
-        if node.hostname in config.nodes:
+        if self._meeting is not None:
+            daemon = self._endpoint
+        elif node.hostname in config.nodes:
             daemon = Endpoint.parse(config.nodes[node.hostname])
         elif node_id == manager:
             daemon = self._endpoint
