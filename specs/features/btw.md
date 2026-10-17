@@ -34,7 +34,9 @@ session's own history.
 asked, that a side conversation is told (§4).
 
 **2.6** **Ask line**: a line of the btw agent's answer of the form
-`@ask <agent>/<n>: <question>`, in which `<agent>/<n>` names a session of the epic.
+`@ask <agent>/<n>: <question>`, in which `<agent>/<n>` names a session of the epic, alone or
+after list markers (`-`, `*`, `+`, `<n>.`, `<n>)`) or quote markers (`>`), and optionally
+wrapped in backticks.
 
 **2.7** **Btw mode**: the state of the terminal interface in which every line the user types,
 other than a `/` command, is a side question (`features/tui.md`).
@@ -46,6 +48,13 @@ questions (`features/web.md`).
 
 **2.10** **The Epic**: the name under which a frontend offers the btw agent as the one a side
 question is asked of.
+
+**2.11** **Ask command**: a run of `hmz-ask ask --to <agent>/<n> --question <question>` by the
+btw agent, in which `<agent>/<n>` names a session of the epic; `hmz-ask list` lists the
+sessions of the epic the side question is about, one `<agent>/<n>` per line, as the frontend
+lists them (§4.10), and is not an ask.
+
+**2.12** **Ask**: an ask line or an ask command.
 
 ## 3. Guarantees
 
@@ -60,7 +69,8 @@ budget limits or the outcome of the epic.
 **3.4** Every side conversation MUST run at the read-only permission level.
 
 **3.5** Every side conversation MUST run with no skills, no goals, no tools of the flow, no
-hooks of the flow and no approval of MCP servers.
+hooks of the flow and no approval of MCP servers, except what §6.10 to §6.14 give the btw
+agent.
 
 **3.6** A side conversation MUST NOT modify any file of the **workspace**.
 
@@ -109,8 +119,10 @@ agents said and did and what its flow printed, each cut to at most 600 character
 
 **4.9** A snapshot MUST NOT contain any agent's thinking.
 
-**4.10** A snapshot told to the btw agent MUST list the sessions of the epic by
-`<agent>/<n>` and MUST state that the btw agent MAY ask them by ask lines (§6).
+**4.10** Every side question put to the btw agent, the first and every later one, MUST list
+the sessions of the epic by `<agent>/<n>`, saying where none is open yet, and MUST state that
+the btw agent MAY ask them by ask commands, and by ask lines where it cannot run a command
+(§6).
 
 **4.11** A snapshot told to a session side copy MUST contain only the observations of the
 asked session's agent and of the flow, and MUST NOT list the sessions of the epic.
@@ -119,7 +131,7 @@ asked session's agent and of the flow, and MUST NOT list the sessions of the epi
 that session's task.
 
 **4.13** Every question after the first in one side conversation MUST be put to that side
-conversation without a further snapshot.
+conversation without a further snapshot, and, to the btw agent, with only what §4.10 states.
 
 **4.14** A snapshot MUST be of the epic the side question is about alone, and MUST NOT
 contain observations of any other epic.
@@ -155,29 +167,58 @@ refuse the side question, saying that the agent that answers The Epic is set in 
 
 ## 6. The btw agent asking sessions
 
-**6.1** The btw agent MAY answer with one or more ask lines instead of an answer to the user.
+**6.1** The btw agent MAY run ask commands during its turn, and MAY answer with one or more
+ask lines instead of an answer to the user.
 
-**6.2** hmz MUST put each ask line's question to the session side copy of the session it
-names, opening that side copy as §5.4 and §5.5 state where it is not open.
+**6.2** hmz MUST put each ask's question to the session side copy of the session it names,
+opening that side copy as §5.4 and §5.5 state where it is not open.
 
 **6.3** hmz MUST return each session side copy's answer to the btw agent, attributed to the
 session it came from.
 
-**6.4** hmz MUST carry out at most 4 ask lines per side question that the user asks.
+**6.4** hmz MUST carry out at most 4 asks, ask commands and ask lines together, per side
+question that the user asks.
 
-**6.5** Once 4 ask lines have been carried out for one side question, hmz MUST tell the btw
-agent that it can ask no more, and MUST take its next answer as the answer to the user.
+**6.5** Once 4 asks have been carried out for one side question, hmz MUST answer every
+further ask command with `No more asks this question: answer the user with what you have.`,
+MUST tell the btw agent so after ask lines, and MUST take its next answer as the answer to
+the user.
 
-**6.6** An ask line that names no session of the epic MUST be answered back to the btw agent
-as a session not found.
+**6.6** An ask that names no session of the epic MUST be answered back to the btw agent as a
+session not found, naming the sessions of the epic.
 
-**6.7** An ask line whose session side copy fails or answers nothing MUST be answered back to
-the btw agent as that failure or as no answer.
+**6.7** An ask whose session side copy fails or answers nothing MUST be answered back to the
+btw agent as that failure or as no answer.
 
-**6.8** A frontend MUST show the user each ask line as it is carried out, naming the session
-and the question.
+**6.8** A frontend MUST show the user each ask as it is carried out, naming the session and
+the question, once per ask.
 
 **6.9** The answer shown to the user MUST NOT contain ask lines.
+
+**6.10** The btw agent's side conversation MUST carry the skill `ask-conversation`, which
+states the ask command and `hmz-ask list`, and says to ask a session rather than guess what it
+did or knows; no session side copy MUST carry it.
+
+**6.11** hmz MUST carry out an ask command on the host that runs the btw agent, while the
+btw agent's turn waits on it, and MUST carry out one ask command run twice with the same
+session and question in one turn once.
+
+**6.12** hmz MUST hang a pre-tool-use hook on the btw agent that carries out an ask command
+the btw agent reaches for. On a harness on which a refusal prevents the tool
+(`features/agents.md` §9.2.1), the hook MUST refuse the tool with the ask command's output as
+the reason.
+
+**6.13** On a harness that has a shell (`features/agents.md` §10.2.1), `hmz-ask` MUST be a
+fake command line that prints the ask command's output. On `codex`, `hmz-ask` alone MUST run
+outside Codex's sandbox (`features/agents.md` §10.2.8), and the sandbox MUST otherwise stay as
+the read-only rung puts it, its network cut.
+
+**6.14** Where the answer to an ask command reached the btw agent neither as a refusal (§6.12)
+nor as output (§6.13), hmz MUST, when the btw agent's turn would stop, send it on with every
+such answer as §6.3 states, at most 4 times per turn.
+
+**6.15** A btw agent whose harness serves no pre-tool-use hook that fires (`litellm`) MUST ask
+by ask lines alone.
 
 ## 7. Choosing the btw agent
 
@@ -196,45 +237,66 @@ agent opens, and MUST NOT change a side conversation already open.
 MUST NOT offer a choice of the agent of a session side copy, which is the asked session's own
 (§5.4, §5.5).
 
+**7.6** A side question whose side conversation would run on a harness that has no read-only
+rung (`mcode`, `dsh`, every ACP harness) MUST be refused, saying that harness has no read-only
+rung.
+
 ## 8. Whom a side question is asked of
 
-**8.1** The btw panel MUST offer, once opened, one control that picks whom the next side
-question is asked of: The Epic, or one session of the epic.
+**8.1** The btw panel MUST hold any number of side conversations at once, each asking one of The
+Epic or one session of the epic, MUST let the user open a new one, and MUST show one at a time,
+offering the others to switch to.
 
-**8.2** That control MUST name the btw agent as `The Epic`, and MUST NOT name it otherwise.
+**8.2** A side conversation of the btw panel MUST be asked of whom the user picked before its
+first question, and MUST NOT be asked of anyone else after; to ask another, the user opens
+another side conversation.
 
-**8.3** That control MUST lay the sessions out as a hierarchy: one entry per agent of the epic,
+**8.3** The btw panel MUST offer, until a side conversation is opened by its first question, one
+control that picks whom it asks, outside the box its question is typed in, and MUST NOT offer it
+once it is open.
+
+**8.4** That control MUST name the btw agent as `The Epic`, and MUST NOT name it otherwise.
+
+**8.5** That control MUST lay the sessions out as a hierarchy: one entry per agent of the epic,
 naming the agent and the role it fills, under which are that agent's sessions, newest first.
 
-**8.4** That control MUST let the user narrow what it offers by typing part of an agent's name,
+**8.6** That control MUST let the user narrow what it offers by typing part of an agent's name,
 a role or a session.
 
-**8.5** That control MUST show which one is picked, and MUST keep the pick while the epic is
+**8.7** That control MUST show which one is picked, and MUST keep the pick while the epic is
 redrawn, falling back to The Epic only where the session picked is no longer of the epic.
 
-**8.6** Btw mode MUST pick whom it asks by the view read, as §5 states (`features/tui.md`).
+**8.8** The btw panel MUST name each side conversation by whom it asks, as `btw · The Epic` or
+`btw · <agent>/<n>`.
+
+**8.9** While a side conversation of the btw panel is answering, the panel MUST show that it is,
+on that side conversation and where it is offered to switch to, MUST show each ask line (§6.8)
+as it is carried out, and MUST NOT let the user send it another question.
+
+**8.10** Btw mode MUST pick whom it asks by the view read, as §5 states (`features/tui.md`).
 
 ## 9. Lifetime of side conversations and asides
 
-**9.1** Every side question after the first, in one btw mode or one btw panel, MUST go on in
-the same side conversation as the first, so that a question MAY refer to an earlier one.
+**9.1** Every side question after the first, in one btw mode or one side conversation of the btw
+panel, MUST go on in the same side conversation as the first, so that a question MAY refer to an
+earlier one.
 
 **9.2** Leaving btw mode (`features/tui.md` §12.8) MUST close every side conversation that btw
 mode opened.
 
-**9.3** Closing the side conversations in the btw panel MUST close every side conversation the
-panel opened.
+**9.3** Closing a side conversation in the btw panel MUST close it, and no other.
 
 **9.4** A new epic starting on the host the frontend follows MUST close every side conversation
 opened about the epic it replaces (`features/tui.md` §12.9).
 
 **9.5** A frontend going away MUST close every side conversation it opened.
 
-**9.6** A side conversation that opens after its btw mode or btw panel was closed MUST be
-closed at once, and its answer MUST NOT be shown.
+**9.6** A side conversation that opens after its btw mode, or it in the btw panel, was closed
+MUST be closed at once, and its answer MUST NOT be shown.
 
-**9.7** The web interface MUST keep, per workspace, which side conversations are open and the
-last 200 asides, so that a page opened again shows them.
+**9.7** The web interface MUST keep, per workspace, which side conversations are open, about
+which epic, whom each asks, the question each is answering and its ask lines so far, and the last
+200 asides of each, so that a page opened again shows them.
 
 **9.8** The terminal interface MUST show each aside in the transcript the user reads, and MUST
 NOT keep asides after the transcript is cleared or the interface closes.

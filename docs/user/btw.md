@@ -117,9 +117,18 @@ Who answers depends on what is on the screen when you type `/btw`:
   **The Epic**, the agent chosen as **/btw The Epic** on the
   [General page of `/settings`](/user/settings#general) -- the same one for every epic. With
   none chosen there, nobody answers The Epic: no agent of the run stands in. It is given a
-  snapshot of the run and the list of its sessions, and it may put a question of its own to
-  any session's side copy, up to 4 per question you ask. Each one shows as a dim
-  `btw · asking <session>: …` line.
+  snapshot of the run, and with every question the list of its sessions, and it may put a
+  question of its own to any session's side copy, up to 4 per question you ask. Each one shows
+  as a dim `btw · asking <session>: …` line.
+
+  The Epic carries an `ask-conversation` skill that tells it to ask a session rather than guess,
+  by running `hmz-ask ask --to <session> --question "…"` (`hmz-ask list` lists the sessions).
+  hmz catches that command where The Epic runs and answers it mid-turn: Claude Code and Qwen
+  Code hear the answer through a hook, a CLI that ran the command reads it from its output, and
+  any other CLI is told it when its turn would end. A CLI that cannot run a command at the
+  read-only rung asks by replying with `@ask <session>: <question>` lines instead.
+  MiniMax Code, DeepSeek Harness and ACP agents have no read-only rung, so they cannot answer
+  The Epic; a side question to one fails, saying so.
 
 The snapshot holds:
 
@@ -173,9 +182,12 @@ What to look at, by number:
   `another…`, which asks for its CLI, account, model and effort. It applies to every epic, from
   the next side conversation of The Epic on. A conversation's side copy is always that
   conversation's own agent: there is nothing to pick for it.
-- **On the web page**, the **Ask** chip on the Aside tab picks whom to ask: **The Epic**, then
-  each agent with the role it fills, opening onto its conversations, newest first. Type in the
-  box at its top to narrow it to the agents, roles and conversations that match.
+- **On the web page**, the Aside tab keeps several side conversations at once, one tab each,
+  and **New aside** opens another. A new one's **Ask** chip, above its box, picks whom it asks:
+  **The Epic**, then each agent with the role it fills, opening onto its conversations, newest
+  first. Type in the box at its top to narrow it to the agents, roles and conversations that
+  match. Its first question fixes whom it asks. While it answers it says so, with each
+  conversation The Epic asks on the way.
 
 ## What a side conversation may do
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -188,24 +189,42 @@ def test_a_side_question_is_asked_beside_the_run_and_never_of_it(
             key = opened["key"]
 
             # Nobody answers The Epic until the settings name who does.
-            nobody = browser.post("/api/btw", {"question": "what is it doing"})
+            asked = {"question": "what is it doing", "aside": "a"}
+            nobody = browser.post("/api/btw", asked)
             assert nobody.status == 409
             assert "settings" in nobody.json()["error"]
+            assert browser.post("/api/btw", {"question": "x"}).status == 400
             assert browser.post("/api/settings", {"btw": AGENT}).status == 200
-            aside = browser.post("/api/btw", {"question": "what is it doing"})
+            aside = browser.post("/api/btw", asked)
             assert aside.status == 200
+            assert aside.json()["aside"] == "a"
             assert aside.json()["answer"].startswith("did: ")
-            of_one = browser.post("/api/btw", {"question": "and you", "to": key})
-            assert of_one.json()["answer"].startswith("did: ")
-            kept = browser.get("/api/btw").json()
-            assert kept["open"] == ["", key]
-            assert [(one["to"], one["question"]) for one in kept["said"]] == [
-                ("", "what is it doing"),
-                (key, "and you"),
+            # Two asides of one conversation, each a side conversation of its own.
+            for one in ("b", "c"):
+                of_one = {"question": f"and you, {one}", "to": key, "aside": one}
+                assert browser.post("/api/btw", of_one).json()["to"] == key
+            # Whom an aside asks is fixed by its first question.
+            again = {"question": "and now", "to": key, "aside": "a"}
+            assert browser.post("/api/btw", again).json()["to"] == ""
+            kept = browser.get("/api/btw").json()["asides"]
+            assert [(one["aside"], one["to"], one["question"]) for one in kept] == [
+                ("a", "", ""),
+                ("b", key, ""),
+                ("c", key, ""),
             ]
+            assert [[said["question"] for said in one["said"]] for one in kept] == [
+                ["what is it doing", "and now"],
+                ["and you, b"],
+                ["and you, c"],
+            ]
+            # Of the run going, and of no other epic.
+            assert browser.get("/api/btw?epic=another").json()["asides"] == []
+            assert browser.post("/api/btw/leave", {"aside": 1}).status == 400
+            assert browser.post("/api/btw/leave", {"aside": "b"}).status == 200
+            left = browser.get("/api/btw").json()["asides"]
+            assert [one["aside"] for one in left] == ["a", "c"]
             assert browser.post("/api/btw/leave").status == 200
-            left = browser.get("/api/btw").json()
-            assert (left["open"], left["said"]) == ([], [])
+            assert browser.get("/api/btw").json()["asides"] == []
 
             # Nothing asked beside the run reached it: its one session said only its own.
             browser.post("/api/held/stop")
@@ -321,7 +340,7 @@ def test_the_epic_is_answered_by_the_agent_the_settings_name_and_no_epics_own(
             epic = going["name"]
             assert browser.get(f"/api/btw?epic={epic}").json()["default"] == ""
             # No agent of the epic stands in for the one the settings name.
-            asked = {"question": "what is it doing", "epic": epic}
+            asked = {"question": "what is it doing", "epic": epic, "aside": "a"}
             assert browser.post("/api/btw", asked).status == 409
 
             assert (
@@ -372,12 +391,13 @@ def test_a_session_of_an_earlier_epic_is_asked_beside_it_as_a_fork_of_its_histor
                 "question": "what was the word",
                 "to": f"{agent['name']}/1",
                 "epic": earlier["name"],
+                "aside": "a",
             },
         )
 
         assert aside.status == 200, aside.body
         said = aside.json()
-        assert said["to"] == f"{earlier['name']}/{agent['name']}/1"
+        assert said["to"] == f"{agent['name']}/1"
         # A fork carries the session's history and is told it is a side copy of it.
         assert "read-only side copy of the flow session" in said["answer"]
         ident = written["sessions"][0]["ident"]
@@ -386,14 +406,74 @@ def test_a_session_of_an_earlier_epic_is_asked_beside_it_as_a_fork_of_its_histor
         assert "--fork-session" in argv
         # Nothing of the side conversation is kept where the earlier epic keeps its own.
         assert sorted(str(one) for one in kept.rglob("*")) == before
+        assert [
+            one["aside"]
+            for one in browser.get(f"/api/btw?epic={earlier['name']}").json()["asides"]
+        ] == ["a"]
+        assert browser.get(f"/api/btw?epic={latest['name']}").json()["asides"] == []
         browser.post("/api/btw/leave", {})
         assert (
             browser.post(
                 "/api/btw",
-                {"question": "x", "to": f"{agent['name']}/9", "epic": earlier["name"]},
+                {
+                    "question": "x",
+                    "to": f"{agent['name']}/9",
+                    "epic": earlier["name"],
+                    "aside": "b",
+                },
             ).status
             == 404
         )
+
+        # The Epic, asked of the earlier epic, is told that epic rather than the latest.
+        assert browser.post("/api/settings", {"btw": AGENT}).status == 200
+        of_it = browser.post(
+            "/api/btw",
+            {"question": "what was it", "epic": earlier["name"], "aside": "c"},
+        )
+        assert of_it.status == 200, of_it.body
+        told = of_it.json()["answer"]
+        assert "remember papaya" in told
+        assert "and then this" not in told
+        assert f"{agent['name']}/1" in told
+
+
+def test_the_epic_lists_and_asks_the_sessions_of_the_earlier_epic_it_is_asked_about(
+    project: Path,
+) -> None:
+    with served() as site:
+        browser = Browser(site)
+        browser.signs_in()
+        _chatted(browser, "remember papaya")
+        _chatted(browser, "and then this")
+        earlier, latest = reversed(browser.get("/api/runs").json()["runs"])
+        (agent,) = browser.get(f"/api/runs/{earlier['name']}").json()["agents"]
+        (other,) = browser.get(f"/api/runs/{latest['name']}").json()["agents"]
+        key, theirs = f"{agent['name']}/1", f"{other['name']}/1"
+        assert key != theirs
+        assert browser.post("/api/settings", {"btw": AGENT}).status == 200
+        asking = [
+            ["hmz-ask", "list"],
+            ["hmz-ask", "ask", "--to", key, "--question", "what was the word"],
+        ]
+
+        said = browser.post(
+            "/api/btw",
+            {
+                "question": f"run: {json.dumps(asking)}",
+                "epic": earlier["name"],
+                "aside": "a",
+            },
+        )
+
+        assert said.status == 200, said.body
+        (listed, asked) = json.loads(said.json()["answer"])
+        # The sessions of the epic asked about, not of the run the host holds now.
+        assert listed[:2] == [0, f"{key}\n"]
+        assert asked[0] == 0, asked
+        # Carried on from where that epic kept it: a fork, told what it is a copy of.
+        assert f"read-only side copy of the flow session `{key}`" in asked[1]
+        assert said.json()["asked"] == [{"to": key, "question": "what was the word"}]
 
 
 def test_an_exported_epic_is_imported_back_by_its_bytes_or_its_path(
