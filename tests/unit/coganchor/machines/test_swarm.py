@@ -743,6 +743,24 @@ def test_what_a_service_dialling_back_is_created_with_is_named_after_it() -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("kind", "made"), [("secret", "svc-peer"), ("config", "svc-tls")]
+)
+def test_a_task_whose_meeting_the_manager_does_not_take_in_time_is_not_created(
+    runs: Runs, handshake: Handshake, broker: Booking, kind: str, made: str
+) -> None:
+    a_swarm(runs, task("running"))
+    runs.on(kind, "create", timeout=True)
+    machine = SwarmConfig(workspace="/w", name="svc", dial_back="h").create()
+
+    with pytest.raises(OSError, match="did not answer within 60s"):
+        machine.start()
+    assert runs.called("service", "create") == []
+    # What the manager may yet make, given up on, goes as what it did make goes.
+    assert runs.called(kind, "rm", made)
+    assert broker.withdrawn == [SERVING]
+
+
 @pytest.mark.parametrize("kind", ["secret", "config"])
 def test_a_task_whose_meeting_or_serving_half_is_refused_is_not_created(
     runs: Runs, handshake: Handshake, broker: Booking, kind: str

@@ -444,6 +444,44 @@ async def test_a_task_a_run_now_gone_left_goes_with_what_it_was_created_with(
     await driver.close()
 
 
+async def test_what_a_task_left_was_created_with_is_removed_whatever_the_others_did(
+    manager: type[_Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    left = Held(
+        "humanize-c-gone",
+        cpus=2,
+        labels={
+            "humanize": str(os.getuid()),
+            HOST: socket.gethostname(),
+            PID: "0",
+            coganchor_swarm.DIALLING: "1",
+        },
+    )
+    monkeypatch.setattr(coganchor_swarm, "services", returning([left]))
+    monkeypatch.setattr(os, "kill", _gone)
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        ran.append(argv)
+        if argv[-3:-1] == ["secret", "rm"]:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout") or 0)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    machine = SwarmMachine("c", PurePosixPath("/srv/x"), stored=runtime(Runtime("c")))
+    driver = MachineEnvDriver(machine, PurePosixPath("/work"))
+
+    await driver.probe()
+
+    assert [argv[-3:] for argv in ran] == [
+        ["service", "rm", "humanize-c-gone"],
+        ["secret", "rm", "humanize-c-gone-peer"],
+        ["config", "rm", "humanize-c-gone-hmz"],
+        ["config", "rm", "humanize-c-gone-tls"],
+    ]
+    await driver.close()
+
+
 def _gone(pid: int, signal: int) -> None:
     raise ProcessLookupError(pid, signal)
 

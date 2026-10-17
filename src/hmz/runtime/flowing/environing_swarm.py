@@ -434,7 +434,7 @@ def _told(where: str) -> Generator[None]:
 def _removed(endpoint: Endpoint, service: str, *, dialled: bool) -> None:
     """Removes a service a run left behind, and what a dial-back one was created with.
 
-    Asking for so long at most, each.
+    Asking for so long at most, each, and asking for each whatever came of the one before.
 
     Args:
       endpoint: The manager.
@@ -443,12 +443,13 @@ def _removed(endpoint: Endpoint, service: str, *, dialled: bool) -> None:
         own.
 
     Raises:
-      OSError: If it could not be asked.
+      OSError: If it could not be asked, for the first that could not.
     """
     import subprocess
 
     from hmz.coganchor.machines.swarm import kept
 
+    unanswered: OSError | None = None
     for kind, name in (("service", service), *(kept(service) if dialled else ())):
         try:
             subprocess.run(
@@ -459,7 +460,11 @@ def _removed(endpoint: Endpoint, service: str, *, dialled: bool) -> None:
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
-            raise OSError(f"{name} was not removed within {_ASKING:g}s") from error
+            if unanswered is None:
+                unanswered = OSError(f"{name} was not removed within {_ASKING:g}s")
+                unanswered.__cause__ = error
+    if unanswered is not None:
+        raise unanswered
 
 
 def _nodes(stored: SwarmRuntime | None) -> dict[str, str]:

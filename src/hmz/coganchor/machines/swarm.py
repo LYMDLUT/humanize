@@ -539,9 +539,9 @@ class Swarm(MachineBase):
           RuntimeError: If the service -- or, dialling back, its secret or configs -- could
             not be created.
           TimeoutError: If the manager did not answer in time: 60 seconds for what it is, and
-            600 for creating the service. A service it creates after all, once it was given
-            up on, has no id here to be removed by: whoever named it can look for it by
-            that name.
+            for each secret and config of a service dialling back, and 600 for creating the
+            service. A service it creates after all, once it was given up on, has no id here
+            to be removed by: whoever named it can look for it by that name.
           OSError: If the manager could not be asked, or manages no active swarm -- or,
             dialling back, this process cannot listen for the task, or the certificate or
             the archive cannot be had.
@@ -740,14 +740,23 @@ class Swarm(MachineBase):
 
         Raises:
           RuntimeError: If the manager would not take it.
+          OSError: If the manager did not answer within 60 s.
         """
-        made = subprocess.run(
-            self._endpoint.docker(kind, "create", *self._owned(), name, source),
-            input=given,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            made = subprocess.run(
+                self._endpoint.docker(kind, "create", *self._owned(), name, source),
+                input=given,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60.0,
+            )
+        except subprocess.TimeoutExpired as error:
+            # Made or not, it goes with the service: a manager slow to answer may make it yet.
+            self._kept.append((kind, name))
+            raise OSError(
+                errno.ETIMEDOUT, f"docker did not answer within {error.timeout:g}s"
+            ) from error
         if made.returncode != 0:
             raise RuntimeError(
                 f"could not create a {kind} on {self._endpoint}: {made.stderr.strip()}"
