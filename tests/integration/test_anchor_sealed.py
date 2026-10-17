@@ -18,7 +18,6 @@ import os
 import shutil
 import socket
 import ssl
-import stat
 import subprocess
 import sys
 import threading
@@ -469,19 +468,48 @@ def test_whoever_reaches_a_punching_anchor_cannot_be_joined_by_saying_its_words_
     assert json.loads(words["direct"]) == {"direct": False}
 
 
+#: What a process standing a broker for booked meetings says of the key it was made, as it is.
+_MINTED = """
+import json, os, stat
+from pathlib import Path
+import hmz
+from hmz.coganchor.rendezvous import CERTIFICATE, standing
+at = Path(standing("127.0.0.1")[0].tls)
+print(json.dumps({
+    "machine": str(hmz.machine()),
+    "at": str(at),
+    "pid": os.getpid(),
+    "mode": stat.S_IMODE(at.stat().st_mode),
+    "key": stat.S_IMODE((at / "key.pem").stat().st_mode),
+    "uid": at.stat().st_uid,
+    "certificate": (at / CERTIFICATE).read_text(),
+}))
+"""
+
+
 def test_the_broker_for_booked_meetings_is_sealed_with_a_key_of_this_machines_alone() -> (
     None
 ):
-    broker, port = standing("127.0.0.1")
-    at = Path(broker.tls)
-    assert at.parent == hmz.machine()
-    # Named for this process, for the next one to remove should this one be killed.
-    assert at.name.startswith(f"rendezvous-{os.getpid()}-")
-    assert stat.S_IMODE(at.stat().st_mode) == 0o700
-    assert stat.S_IMODE((at / "key.pem").stat().st_mode) == 0o600
-    assert (at / CERTIFICATE).read_text().startswith("-----BEGIN CERTIFICATE-----")
-    assert at.stat().st_uid == os.getuid()
+    # Read in a process of its own: a broker is one per process and address, and this
+    # process may hold one an earlier test stood, under that test's directory.
+    said = subprocess.run(
+        [sys.executable, "-P", "-c", _MINTED],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=PATIENCE,
+    )
+    minted = json.loads(said.stdout)
+    at = Path(minted["at"])
+    assert at.parent == Path(minted["machine"]) == hmz.machine()
+    # Named for its process, for the next one to remove should that one be killed.
+    assert at.name.startswith(f"rendezvous-{minted['pid']}-")
+    assert minted["mode"] == 0o700
+    assert minted["key"] == 0o600
+    assert minted["certificate"].startswith("-----BEGIN CERTIFICATE-----")
+    assert minted["uid"] == os.getuid()
     # And it is a broker that meets nobody in the clear.
+    broker, port = standing("127.0.0.1")
     serving, anchoring = broker.stand()
     with pytest.raises(OSError, match=r"."):
         dial(Meeting(anchoring, "127.0.0.1", port), ANCHOR, timeout=5)
