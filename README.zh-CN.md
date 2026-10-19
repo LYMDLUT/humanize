@@ -81,4 +81,3 @@ hmz exec -f chat -a assistant=claude/claude-opus-5:high "What does this reposito
 ## 许可
 
 Apache-2.0 &copy; Humanfia
-

@@ -133,4 +133,3 @@ Codex 的 ChatGPT 登录与 Claude Code 的订阅登录会自我续期，续期�
 | 找改动落哪，或加后端、加命令 | [架构](/contributing/architecture) |
 | 读 CI 对改动跑了什么、为什么 | [CI](/contributing/ci) |
 | 按规则检查一页文档 | [文档工作指南](/contributing/docs) |
-
