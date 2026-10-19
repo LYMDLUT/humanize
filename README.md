@@ -1,8 +1,18 @@
+<div align="center">
+
+[English](./README.md) | **简体中文**
+
+</div>
+
+---
+
 # humanize _(hmz)_
 
 ![humanize](https://socialify.git.ci/humanfia/humanize/image?description=1&font=Raleway&forks=1&issues=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2Fhumanfia%2Fhumanize%2Frefs%2Fheads%2Fmain%2Fdocs%2Fpublic%2Flogo.svg&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Auto)
 
 The agent flow system for token maxxing.
+
+Docs: <https://docs.humanfia.ai/humanize/> ([简体中文](https://docs.humanfia.ai/humanize/zh/))
 
 ## Install
 

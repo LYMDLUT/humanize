@@ -131,9 +131,6 @@ const wayTo = (to: string) => (/^https?:\/\//.test(to) ? to : `${BASE}${to}`)
 
 export default defineConfig({
   base: BASE,
-  title: 'humanize',
-  description: 'Orchestrate, execute, and observe agent flows',
-  lang: 'en-US',
   cleanUrls: true,
   lastUpdated: true,
 
@@ -152,312 +149,410 @@ export default defineConfig({
     ['meta', { name: 'theme-color', media: '(prefers-color-scheme: dark)', content: '#0f1418' }],
   ],
 
-  themeConfig: {
-    // A fixed pair rather than `logo.svg`, which follows the viewer's preference: the nav
-    // follows the site's own light/dark switch instead. `logo.svg` is for everywhere else --
-    // the README's banner links it.
-    logo: { light: '/logo-light.svg', dark: '/logo-dark.svg', alt: 'humanize' },
+  locales: {
+    root: {
+      label: 'English',
+      lang: 'en-US',
+      title: 'humanize',
+      description: 'Orchestrate, execute, and observe agent flows',
+      themeConfig: {
+  // A fixed pair rather than `logo.svg`, which follows the viewer's preference: the nav
+  // follows the site's own light/dark switch instead. `logo.svg` is for everywhere else --
+  // the README's banner links it.
+  logo: { light: '/logo-light.svg', dark: '/logo-dark.svg', alt: 'humanize' },
 
-    // Five sections, in the order a reader comes to need them. The home page's quickstart ends
-    // on a first run, and what that reader wants next is the guide to running flows; after
-    // that, writing one of their own. Features explains how it all works, for whoever wants to
-    // know why; reference spells every part of it out; and contributing is for the few working
-    // on humanize itself. The flows there are to run are humanfia's, at humanfia.ai/flows.
-    nav: [
-      { text: 'User Guide', link: '/user/', activeMatch: '/user/' },
-      { text: 'Weaver Guide', link: '/weaver/', activeMatch: '/weaver/' },
-      { text: 'Features', link: '/features/', activeMatch: '/features/' },
-      { text: 'Reference', link: '/reference/', activeMatch: '/reference/' },
+  // Five sections, in the order a reader comes to need them. The home page's quickstart ends
+  // on a first run, and what that reader wants next is the guide to running flows; after
+  // that, writing one of their own. Features explains how it all works, for whoever wants to
+  // know why; reference spells every part of it out; and contributing is for the few working
+  // on humanize itself. The flows there are to run are humanfia's, at humanfia.ai/flows.
+  nav: [
+    { text: 'User Guide', link: '/user/', activeMatch: '/user/' },
+    { text: 'Weaver Guide', link: '/weaver/', activeMatch: '/weaver/' },
+    { text: 'Features', link: '/features/', activeMatch: '/features/' },
+    { text: 'Reference', link: '/reference/', activeMatch: '/reference/' },
+    {
+      text: 'Contributing',
+      link: '/contributing/',
+      activeMatch: '/contributing/',
+    },
+  ],
+
+  // Every sidebar opens with its own section as a link rather than with an entry inside a
+  // group of the same name: a group called Features holding an item called "All of them" is
+  // a title nobody would write on the page itself, and the page is what it goes to. So the
+  // section is the first line, and the groups under it are what they were.
+  //
+  // The three role guides then open with Tutorials, because a reader who has arrived at
+  // their own section wants to be led once before being asked to look something up.
+  sidebar: {
+    // Grouped by what the reader is doing when they would want each one, in the order they
+    // meet it: choosing agents, a run under way, where its work lands, reading it back, and
+    // last, writing a flow of your own. Each title says what you get rather than what the
+    // mechanism is called. The capability map is grouped the same five ways.
+    '/features/': [
+      { text: 'Features', link: '/features/' },
+      { text: 'Everything it does', link: '/features/capabilities' },
       {
-        text: 'Contributing',
-        link: '/contributing/',
-        activeMatch: '/contributing/',
+        text: 'Run it your way',
+        collapsed: false,
+        items: [
+          { text: 'Every coding agent you have', link: '/features/backends' },
+          { text: 'Two accounts of one CLI', link: '/features/accounts' },
+          { text: 'Prompt, browser, script or Python', link: '/features/surfaces' },
+        ],
+      },
+      {
+        text: 'While it runs',
+        collapsed: false,
+        items: [
+          { text: 'Talk into a running turn', link: '/features/steering' },
+          { text: 'When a flow asks you', link: '/features/human' },
+          { text: 'A budget on every run', link: '/features/allowances' },
+          { text: 'Close the terminal, keep the run', link: '/features/daemon' },
+        ],
+      },
+      {
+        text: 'Where the work lands',
+        collapsed: false,
+        items: [{ text: 'Work on another machine', link: '/features/anchor' }],
+      },
+      {
+        text: 'After a run',
+        collapsed: false,
+        items: [
+          { text: 'Every agent on one timeline', link: '/features/tracing' },
+          { text: 'Pick up where it stopped', link: '/features/resuming' },
+        ],
+      },
+      {
+        text: 'Writing a flow',
+        collapsed: false,
+        items: [
+          { text: 'A loop in plain Python', link: '/features/flows' },
+          { text: 'Many conversations at once', link: '/features/concurrency' },
+          { text: 'Answers as typed data', link: '/features/shapes' },
+          { text: 'The agent decides it is done', link: '/features/goals' },
+          { text: 'React to each moment of a turn', link: '/features/hooks' },
+          { text: 'Cap a single turn', link: '/features/budgets' },
+        ],
       },
     ],
 
-    // Every sidebar opens with its own section as a link rather than with an entry inside a
-    // group of the same name: a group called Features holding an item called "All of them" is
-    // a title nobody would write on the page itself, and the page is what it goes to. So the
-    // section is the first line, and the groups under it are what they were.
-    //
-    // The three role guides then open with Tutorials, because a reader who has arrived at
-    // their own section wants to be led once before being asked to look something up.
-    sidebar: {
-      // Grouped by what the reader is doing when they would want each one, in the order they
-      // meet it: choosing agents, a run under way, where its work lands, reading it back, and
-      // last, writing a flow of your own. Each title says what you get rather than what the
-      // mechanism is called. The capability map is grouped the same five ways.
-      '/features/': [
-        { text: 'Features', link: '/features/' },
-        { text: 'Everything it does', link: '/features/capabilities' },
-        {
-          text: 'Run it your way',
-          collapsed: false,
-          items: [
-            { text: 'Every coding agent you have', link: '/features/backends' },
-            { text: 'Two accounts of one CLI', link: '/features/accounts' },
-            { text: 'Prompt, browser, script or Python', link: '/features/surfaces' },
-          ],
-        },
-        {
-          text: 'While it runs',
-          collapsed: false,
-          items: [
-            { text: 'Talk into a running turn', link: '/features/steering' },
-            { text: 'When a flow asks you', link: '/features/human' },
-            { text: 'A budget on every run', link: '/features/allowances' },
-            { text: 'Close the terminal, keep the run', link: '/features/daemon' },
-          ],
-        },
-        {
-          text: 'Where the work lands',
-          collapsed: false,
-          items: [{ text: 'Work on another machine', link: '/features/anchor' }],
-        },
-        {
-          text: 'After a run',
-          collapsed: false,
-          items: [
-            { text: 'Every agent on one timeline', link: '/features/tracing' },
-            { text: 'Pick up where it stopped', link: '/features/resuming' },
-          ],
-        },
-        {
-          text: 'Writing a flow',
-          collapsed: false,
-          items: [
-            { text: 'A loop in plain Python', link: '/features/flows' },
-            { text: 'Many conversations at once', link: '/features/concurrency' },
-            { text: 'Answers as typed data', link: '/features/shapes' },
-            { text: 'The agent decides it is done', link: '/features/goals' },
-            { text: 'React to each moment of a turn', link: '/features/hooks' },
-            { text: 'Cap a single turn', link: '/features/budgets' },
-          ],
-        },
-      ],
+    // For the person who runs flows, in the order they need it: installing, a first run and
+    // what to check before real work, then the tutorials, then the rest grouped by when a
+    // reader reaches for it -- while a run goes, at the prompt, setting agents up, where the
+    // work lands, after a run, without the interface -- and look-up last, the glossary
+    // included.
+    '/user/': [
+      { text: 'User Guide', link: '/user/' },
+      {
+        text: 'Start here',
+        collapsed: false,
+        items: [
+          { text: 'Installation', link: '/user/installation' },
+          { text: 'Your first run', link: '/user/first-run' },
+          { text: 'Security', link: '/user/security' },
+        ],
+      },
+      {
+        text: 'Tutorials',
+        collapsed: false,
+        items: [
+          { text: 'Beat a benchmark', link: '/user/tutorials/take-home' },
+          { text: 'Port a project', link: '/user/tutorials/port-a-project' },
+          { text: 'Build a coding agent', link: '/user/tutorials/build-an-agent' },
+        ],
+      },
+      {
+        text: 'While it runs',
+        collapsed: false,
+        items: [
+          { text: 'Talking to a running turn', link: '/user/steering' },
+          { text: 'Side questions (/btw)', link: '/user/btw' },
+          { text: 'Many conversations at once', link: '/user/conversations' },
+          { text: 'Watching a run (the monitor)', link: '/user/monitor' },
+          { text: 'Being away (/afk)', link: '/user/afk' },
+          { text: 'Stopping', link: '/user/stopping' },
+          { text: 'Leaving it running', link: '/user/leaving' },
+          { text: 'In a browser (hmz web)', link: '/user/web' },
+          { text: 'The macOS app', link: '/user/desktop' },
+          { text: 'The mission board', link: '/user/board' },
+        ],
+      },
+      {
+        text: 'At the prompt',
+        collapsed: false,
+        items: [
+          { text: 'Completion', link: '/user/completion' },
+          { text: 'History', link: '/user/history' },
+          { text: 'Settings (/settings)', link: '/user/settings' },
+        ],
+      },
+      {
+        text: 'Agents and accounts',
+        collapsed: false,
+        items: [
+          { text: 'Accounts', link: '/user/settings#accounts' },
+          { text: 'Efforts', link: '/user/efforts' },
+          { text: 'Falling back', link: '/user/settings#fallback' },
+          { text: 'Cost and rate', link: '/user/tally' },
+          { text: 'Permissions', link: '/user/permissions' },
+          { text: 'Skills', link: '/user/skills' },
+          { text: 'Questions', link: '/user/questions' },
+        ],
+      },
+      {
+        text: 'Where the work lands',
+        collapsed: false,
+        items: [
+          { text: 'Remote execution', link: '/user/remote-execution' },
+          { text: 'Where the agent runs (harness setting)', link: '/user/remote-execution#where-the-agent-runs' },
+          { text: 'Containers', link: '/user/containers' },
+        ],
+      },
+      {
+        text: 'After a run',
+        collapsed: false,
+        items: [
+          { text: 'Picking a run up', link: '/user/resuming' },
+          { text: 'Exporting a run', link: '/user/export' },
+          { text: 'Backing epics up', link: '/user/backups' },
+          { text: 'Tracing', link: '/user/tracing' },
+        ],
+      },
+      {
+        text: 'Without the interface',
+        collapsed: false,
+        items: [
+          { text: 'Run it unattended', link: '/user/unattended' },
+          { text: 'humanize in CI', link: '/user/ci' },
+        ],
+      },
+      {
+        text: 'Look-up',
+        collapsed: false,
+        items: [
+          { text: 'Troubleshooting', link: '/user/troubleshooting' },
+          { text: 'Reporting', link: '/user/reporting' },
+          { text: 'Glossary', link: '/user/concepts' },
+        ],
+      },
+    ],
 
-      // For the person who runs flows, in the order they need it: installing, a first run and
-      // what to check before real work, then the tutorials, then the rest grouped by when a
-      // reader reaches for it -- while a run goes, at the prompt, setting agents up, where the
-      // work lands, after a run, without the interface -- and look-up last, the glossary
-      // included.
-      '/user/': [
-        { text: 'User Guide', link: '/user/' },
-        {
-          text: 'Start here',
-          collapsed: false,
-          items: [
-            { text: 'Installation', link: '/user/installation' },
-            { text: 'Your first run', link: '/user/first-run' },
-            { text: 'Security', link: '/user/security' },
-          ],
-        },
-        {
-          text: 'Tutorials',
-          collapsed: false,
-          items: [
-            { text: 'Beat a benchmark', link: '/user/tutorials/take-home' },
-            { text: 'Port a project', link: '/user/tutorials/port-a-project' },
-            { text: 'Build a coding agent', link: '/user/tutorials/build-an-agent' },
-          ],
-        },
-        {
-          text: 'While it runs',
-          collapsed: false,
-          items: [
-            { text: 'Talking to a running turn', link: '/user/steering' },
-            { text: 'Side questions (/btw)', link: '/user/btw' },
-            { text: 'Many conversations at once', link: '/user/conversations' },
-            { text: 'Watching a run (the monitor)', link: '/user/monitor' },
-            { text: 'Being away (/afk)', link: '/user/afk' },
-            { text: 'Stopping', link: '/user/stopping' },
-            { text: 'Leaving it running', link: '/user/leaving' },
-            { text: 'In a browser (hmz web)', link: '/user/web' },
-            { text: 'The macOS app', link: '/user/desktop' },
-            { text: 'The mission board', link: '/user/board' },
-          ],
-        },
-        {
-          text: 'At the prompt',
-          collapsed: false,
-          items: [
-            { text: 'Completion', link: '/user/completion' },
-            { text: 'History', link: '/user/history' },
-            { text: 'Settings (/settings)', link: '/user/settings' },
-          ],
-        },
-        {
-          text: 'Agents and accounts',
-          collapsed: false,
-          items: [
-            { text: 'Accounts', link: '/user/settings#accounts' },
-            { text: 'Efforts', link: '/user/efforts' },
-            { text: 'Falling back', link: '/user/settings#fallback' },
-            { text: 'Cost and rate', link: '/user/tally' },
-            { text: 'Permissions', link: '/user/permissions' },
-            { text: 'Skills', link: '/user/skills' },
-            { text: 'Questions', link: '/user/questions' },
-          ],
-        },
-        {
-          text: 'Where the work lands',
-          collapsed: false,
-          items: [
-            { text: 'Remote execution', link: '/user/remote-execution' },
-            { text: 'Where the agent runs (harness setting)', link: '/user/remote-execution#where-the-agent-runs' },
-            { text: 'Containers', link: '/user/containers' },
-          ],
-        },
-        {
-          text: 'After a run',
-          collapsed: false,
-          items: [
-            { text: 'Picking a run up', link: '/user/resuming' },
-            { text: 'Exporting a run', link: '/user/export' },
-            { text: 'Backing epics up', link: '/user/backups' },
-            { text: 'Tracing', link: '/user/tracing' },
-          ],
-        },
-        {
-          text: 'Without the interface',
-          collapsed: false,
-          items: [
-            { text: 'Run it unattended', link: '/user/unattended' },
-            { text: 'humanize in CI', link: '/user/ci' },
-          ],
-        },
-        {
-          text: 'Look-up',
-          collapsed: false,
-          items: [
-            { text: 'Troubleshooting', link: '/user/troubleshooting' },
-            { text: 'Reporting', link: '/user/reporting' },
-            { text: 'Glossary', link: '/user/concepts' },
-          ],
-        },
-      ],
+    // For the weaver: the person who writes the flow. Everything here is Python, and the
+    // reader is expected to have run one before writing one. The order is the order they
+    // need it in: a flow of their own running first, then what grows it, then what an agent
+    // can be asked, and testing and publishing once there is something worth either.
+    '/weaver/': [
+      { text: 'Weaver Guide', link: '/weaver/' },
+      {
+        text: 'Start here',
+        collapsed: false,
+        items: [
+          { text: 'Your first flow', link: '/weaver/writing-a-flow' },
+          { text: 'Build under test', link: '/weaver/tutorials/build-under-test' },
+          { text: 'Loops', link: '/weaver/loops' },
+          { text: 'Params of its own', link: '/weaver/flow-settings' },
+        ],
+      },
+      {
+        text: 'Growing a flow',
+        collapsed: false,
+        items: [
+          { text: 'Many turns at once', link: '/weaver/async-flows' },
+          { text: 'A flow that calls a flow', link: '/weaver/calling-flows' },
+          { text: 'Branching a conversation', link: '/weaver/branching' },
+          { text: 'Worktrees, copies and scratch', link: '/weaver/worktrees' },
+        ],
+      },
+      {
+        text: 'What an agent can be asked',
+        collapsed: false,
+        items: [
+          { text: 'Goals', link: '/weaver/goals' },
+          { text: 'Answers in a shape', link: '/weaver/shapes' },
+          { text: 'Hooks', link: '/weaver/hooks' },
+          { text: 'The agent asking the flow', link: '/weaver/tools' },
+          { text: 'The person as an agent', link: '/weaver/human-agent' },
+        ],
+      },
+      {
+        text: 'When it is ready',
+        collapsed: false,
+        items: [
+          { text: 'Testing a flow', link: '/weaver/testing-flows' },
+          { text: 'Flowverses', link: '/weaver/flowverses' },
+        ],
+      },
+    ],
 
-      // For the weaver: the person who writes the flow. Everything here is Python, and the
-      // reader is expected to have run one before writing one. The order is the order they
-      // need it in: a flow of their own running first, then what grows it, then what an agent
-      // can be asked, and testing and publishing once there is something worth either.
-      '/weaver/': [
-        { text: 'Weaver Guide', link: '/weaver/' },
-        {
-          text: 'Start here',
-          collapsed: false,
-          items: [
-            { text: 'Your first flow', link: '/weaver/writing-a-flow' },
-            { text: 'Build under test', link: '/weaver/tutorials/build-under-test' },
-            { text: 'Loops', link: '/weaver/loops' },
-            { text: 'Params of its own', link: '/weaver/flow-settings' },
-          ],
-        },
-        {
-          text: 'Growing a flow',
-          collapsed: false,
-          items: [
-            { text: 'Many turns at once', link: '/weaver/async-flows' },
-            { text: 'A flow that calls a flow', link: '/weaver/calling-flows' },
-            { text: 'Branching a conversation', link: '/weaver/branching' },
-            { text: 'Worktrees, copies and scratch', link: '/weaver/worktrees' },
-          ],
-        },
-        {
-          text: 'What an agent can be asked',
-          collapsed: false,
-          items: [
-            { text: 'Goals', link: '/weaver/goals' },
-            { text: 'Answers in a shape', link: '/weaver/shapes' },
-            { text: 'Hooks', link: '/weaver/hooks' },
-            { text: 'The agent asking the flow', link: '/weaver/tools' },
-            { text: 'The person as an agent', link: '/weaver/human-agent' },
-          ],
-        },
-        {
-          text: 'When it is ready',
-          collapsed: false,
-          items: [
-            { text: 'Testing a flow', link: '/weaver/testing-flows' },
-            { text: 'Flowverses', link: '/weaver/flowverses' },
-          ],
-        },
-      ],
+    '/contributing/': [
+      { text: 'Contributing', link: '/contributing/' },
+      {
+        text: 'Tutorials',
+        collapsed: false,
+        items: [
+          { text: 'Your first patch', link: '/contributing/tutorials/first-patch' },
+          { text: 'Add a page to these docs', link: '/contributing/tutorials/a-page-of-docs' },
+        ],
+      },
+      {
+        text: 'How the repository works',
+        collapsed: false,
+        items: [
+          { text: 'Architecture', link: '/contributing/architecture' },
+          { text: 'CI', link: '/contributing/ci' },
+          { text: 'Working on these docs', link: '/contributing/docs' },
+        ],
+      },
+      {
+        text: 'Maintaining',
+        collapsed: false,
+        items: [{ text: 'Releasing', link: '/contributing/releasing' }],
+      },
+    ],
 
-      '/contributing/': [
-        { text: 'Contributing', link: '/contributing/' },
-        {
-          text: 'Tutorials',
-          collapsed: false,
-          items: [
-            { text: 'Your first patch', link: '/contributing/tutorials/first-patch' },
-            { text: 'Add a page to these docs', link: '/contributing/tutorials/a-page-of-docs' },
-          ],
-        },
-        {
-          text: 'How the repository works',
-          collapsed: false,
-          items: [
-            { text: 'Architecture', link: '/contributing/architecture' },
-            { text: 'CI', link: '/contributing/ci' },
-            { text: 'Working on these docs', link: '/contributing/docs' },
-          ],
-        },
-        {
-          text: 'Maintaining',
-          collapsed: false,
-          items: [{ text: 'Releasing', link: '/contributing/releasing' }],
-        },
-      ],
+    '/reference/': [
+      { text: 'Reference', link: '/reference/' },
+      {
+        text: 'Command line',
+        items: [
+          { text: 'CLI', link: '/reference/cli' },
+          { text: 'TUI', link: '/reference/tui' },
+          { text: 'Web', link: '/reference/web' },
+          { text: 'Daemon', link: '/reference/daemon' },
+        ],
+      },
+      {
+        text: 'Python',
+        items: [
+          { text: 'SDK', link: '/reference/sdk' },
+          { text: 'Flows', link: '/reference/flows' },
+          { text: 'Agents', link: '/reference/agents' },
+          { text: 'Machines', link: '/reference/machines' },
+          { text: 'Providers', link: '/reference/providers' },
+          { text: 'Remote execution', link: '/reference/remote-execution' },
+          { text: 'Tracing', link: '/reference/tracing' },
+        ],
+      },
+      {
+        text: 'State',
+        items: [
+          { text: 'Files', link: '/reference/files' },
+          { text: 'Settings', link: '/reference/settings' },
+          { text: 'Environment variables', link: '/reference/environment' },
+        ],
+      },
+    ],
+  },
 
-      '/reference/': [
-        { text: 'Reference', link: '/reference/' },
-        {
-          text: 'Command line',
-          items: [
-            { text: 'CLI', link: '/reference/cli' },
-            { text: 'TUI', link: '/reference/tui' },
-            { text: 'Web', link: '/reference/web' },
-            { text: 'Daemon', link: '/reference/daemon' },
-          ],
-        },
-        {
-          text: 'Python',
-          items: [
-            { text: 'SDK', link: '/reference/sdk' },
-            { text: 'Flows', link: '/reference/flows' },
-            { text: 'Agents', link: '/reference/agents' },
-            { text: 'Machines', link: '/reference/machines' },
-            { text: 'Providers', link: '/reference/providers' },
-            { text: 'Remote execution', link: '/reference/remote-execution' },
-            { text: 'Tracing', link: '/reference/tracing' },
-          ],
-        },
-        {
-          text: 'State',
-          items: [
-            { text: 'Files', link: '/reference/files' },
-            { text: 'Settings', link: '/reference/settings' },
-            { text: 'Environment variables', link: '/reference/environment' },
-          ],
-        },
-      ],
+  socialLinks: [{ icon: 'github', link: 'https://github.com/humanfia/humanize' }],
+
+  editLink: {
+    pattern: 'https://github.com/humanfia/humanize/edit/main/docs/:path',
+    text: 'Edit this page on GitHub',
+  },
+
+  search: { provider: 'local' },
+
+  outline: { level: [2, 3] },
+
+  footer: {
+    message: 'Released under the Apache-2.0 licence.',
+    copyright: 'Copyright © 2026 Zijian Zhang',
+  },
+      },
     },
 
-    socialLinks: [{ icon: 'github', link: 'https://github.com/humanfia/humanize' }],
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      title: 'humanize',
+      description: '编排、执行并观察智能体流程',
+      themeConfig: {
+        logo: { light: '/logo-light.svg', dark: '/logo-dark.svg', alt: 'humanize' },
 
-    editLink: {
-      pattern: 'https://github.com/humanfia/humanize/edit/main/docs/:path',
-      text: 'Edit this page on GitHub',
-    },
+        // The Chinese site is a progressive translation: the pages named here are
+        // translated, and every other page of a section is a link to its English
+        // original, so nothing a sidebar offers is a dead end.
+        nav: [
+          { text: '用户指南', link: '/zh/user/', activeMatch: '/zh/user/' },
+          { text: '编织者指南', link: '/zh/weaver/', activeMatch: '/zh/weaver/' },
+          { text: '特性', link: '/zh/features/', activeMatch: '/zh/features/' },
+          { text: '参考', link: '/zh/reference/', activeMatch: '/zh/reference/' },
+          { text: '贡献', link: '/zh/contributing/', activeMatch: '/zh/contributing/' },
+        ],
 
-    search: { provider: 'local' },
+        sidebar: {
+          '/zh/user/': [
+            { text: '用户指南', link: '/zh/user/' },
+            {
+              text: '从这里开始',
+              collapsed: false,
+              items: [
+                { text: '安装', link: '/zh/user/installation' },
+                { text: '首次运行', link: '/zh/user/first-run' },
+                { text: '安全', link: '/zh/user/security' },
+              ],
+            },
+            {
+              text: '查阅',
+              collapsed: false,
+              items: [
+                { text: '术语表', link: '/zh/user/concepts' },
+                { text: '其余章节（英文）', link: '/user/' },
+              ],
+            },
+          ],
 
-    outline: { level: [2, 3] },
+          '/zh/weaver/': [
+            { text: '编织者指南', link: '/zh/weaver/' },
+            { text: '其余章节（英文）', link: '/weaver/' },
+          ],
 
-    footer: {
-      message: 'Released under the Apache-2.0 licence.',
-      copyright: 'Copyright © 2026 Zijian Zhang',
+          '/zh/features/': [
+            { text: '特性', link: '/zh/features/' },
+            { text: '其余章节（英文）', link: '/features/' },
+          ],
+
+          '/zh/reference/': [
+            { text: '参考', link: '/zh/reference/' },
+            { text: '其余章节（英文）', link: '/reference/' },
+          ],
+
+          '/zh/contributing/': [
+            { text: '贡献', link: '/zh/contributing/' },
+            { text: '其余章节（英文）', link: '/contributing/' },
+          ],
+        },
+
+        socialLinks: [{ icon: 'github', link: 'https://github.com/humanfia/humanize' }],
+
+        editLink: {
+          pattern: 'https://github.com/humanfia/humanize/edit/main/docs/:path',
+          text: '在 GitHub 上编辑此页',
+        },
+
+        search: { provider: 'local' },
+
+        outline: { level: [2, 3], label: '本页目录' },
+
+        docFooter: { prev: '上一页', next: '下一页' },
+
+        lastUpdated: { text: '最后更新' },
+
+        darkModeSwitchLabel: '外观',
+        lightModeSwitchTitle: '切换到亮色模式',
+        darkModeSwitchTitle: '切换到暗色模式',
+        sidebarMenuLabel: '菜单',
+        returnToTopLabel: '回到顶部',
+
+        footer: {
+          message: '基于 Apache-2.0 许可发布。',
+          copyright: 'Copyright © 2026 Zijian Zhang',
+        },
+      },
     },
   },
 
